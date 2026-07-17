@@ -12,17 +12,15 @@ The column set lives in COLUMNS: adding a field = add an attribute to DeviceReco
 from __future__ import annotations
 
 import csv
-import curses
 import logging
 import os
-import sys
-import termios
 import threading
 import time
 from dataclasses import dataclass, field
 
 from blatann.gap.advertise_data import AdvertisingPacketType
 
+import livetable
 from bledev import get_manufacturer, open_device
 
 # Continuous scanning is achieved by restarting chunks of this duration
@@ -140,9 +138,7 @@ class DeviceRecord:
 
 # --- Columns (extensible registry) ------------------------------------------
 # (header, width, function(record) -> str)
-Column = tuple[str, int, "callable"]
-
-COLUMNS: list[Column] = [
+COLUMNS: list[livetable.Column] = [
     ("Address",       19, lambda d: d.address.split(",")[0]),
     ("Addr",           6, lambda d: d.addr_type),
     ("Name",          14, lambda d: d.name),
@@ -154,13 +150,6 @@ COLUMNS: list[Column] = [
     ("Pkt",            4, lambda d: str(d.count)),
     ("Age",            4, lambda d: f"{int(time.time() - d.last_seen)}s"),
 ]
-
-
-def _cell(text: str, width: int) -> str:
-    text = text or ""
-    if len(text) > width:
-        return text[: width - 1] + "…"
-    return text.ljust(width)
 
 
 # --- Scan engine ------------------------------------------------------------
@@ -251,63 +240,6 @@ class LiveScanner:
         return path
 
 
-# --- curses UI --------------------------------------------------------------
-
-def _disable_flow_control() -> None:
-    """Disable IXON so Ctrl+S (0x13) reaches us instead of freezing the TTY."""
-    fd = sys.stdin.fileno()
-    attrs = termios.tcgetattr(fd)
-    attrs[0] &= ~termios.IXON
-    termios.tcsetattr(fd, termios.TCSANOW, attrs)
-
-
-def _draw(stdscr, scanner: LiveScanner, last_saved: str | None) -> None:
-    stdscr.erase()
-    height, width = stdscr.getmaxyx()
-
-    header = "".join(_cell(h, w) + " " for h, w, _ in COLUMNS).rstrip()
-    stdscr.addnstr(0, 0, header, width - 1, curses.A_BOLD | curses.A_UNDERLINE)
-
-    records = sorted(scanner.snapshot(), key=lambda r: r.rssi, reverse=True)
-    for i, d in enumerate(records):
-        y = i + 1
-        if y >= height - 2:  # leave room for the status + command bars
-            break
-        line = "".join(_cell(func(d), w) + " " for _, w, func in COLUMNS).rstrip()
-        stdscr.addnstr(y, 0, line, width - 1)
-
-    # Status / command bar at the bottom
-    state = "SCANNING" if scanner.is_scanning else "PAUSED"
-    status = f" {state} · {len(records)} devices"
-    if last_saved:
-        status += f" · saved: {last_saved}"
-    commands = "  ^P pause/resume   ^S save CSV   Q quit "
-
-    stdscr.addnstr(height - 2, 0, status.ljust(width - 1), width - 1, curses.A_REVERSE)
-    stdscr.addnstr(height - 1, 0, commands.ljust(width - 1), width - 1, curses.A_BOLD)
-    stdscr.refresh()
-
-
-def _ui(stdscr, scanner: LiveScanner) -> None:
-    curses.curs_set(0)
-    _disable_flow_control()
-    stdscr.nodelay(True)
-    stdscr.timeout(250)  # redraw at least every 250ms
-
-    last_saved: str | None = None
-    while True:
-        _draw(stdscr, scanner, last_saved)
-        ch = stdscr.getch()
-        if ch == -1:
-            continue
-        if ch in (ord("q"), ord("Q")):
-            return
-        if ch == 16:  # Ctrl+P
-            scanner.resume() if not scanner.is_scanning else scanner.pause()
-        elif ch == 19:  # Ctrl+S
-            last_saved = scanner.save_csv()
-
-
 def run(port: str | None = None) -> None:
     """Entry point: open the dongle and start the live UI."""
     # Log to a file: nothing must land on the curses screen
@@ -320,7 +252,7 @@ def run(port: str | None = None) -> None:
     scanner.open()
     scanner.start()
     try:
-        curses.wrapper(_ui, scanner)
+        livetable.run(scanner, COLUMNS, title="BLE")
     finally:
         scanner.close()
 

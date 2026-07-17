@@ -61,6 +61,22 @@ Also available standalone:
 .venv310/bin/python scan_live.py
 ```
 
+### Live Bluetooth Classic scan (BR/EDR)
+Live table of **non-BLE** (Bluetooth Classic) devices — speakers, headsets, phones.
+This does **not** use the nRF52 dongle: it drives the **host Bluetooth adapter** via
+BlueZ, so you need a working `hci` controller:
+
+```bash
+sudo systemctl start bluetooth
+sudo hciconfig hci0 up          # confirm with: hciconfig hci0  (UP RUNNING)
+.venv310/bin/python scan_classic.py
+```
+
+The main identifier for a Classic device is its **Class of Device (CoD)**, decoded
+into a readable label (e.g. `Audio/Video · Loudspeaker` for a JBL Go 3); the table
+also shows Name, Icon and RSSI. Note: a Classic device only answers an inquiry while
+it is **discoverable** (pairing mode) — one already connected or idle will not appear.
+
 ### Batch scan (scriptable)
 Non-interactive scan for a fixed duration, exports to `csv/output_<epoch>.csv`.
 
@@ -92,11 +108,13 @@ To verify it: connect from your phone with the **nRF Connect** app, or with
 
 ```
 cli.py          interactive menu (entry point)
-scan_live.py    live scan: full-screen table + CSV
-scan.py         batch scan -> CSV
+scan_live.py    live BLE scan: full-screen table + CSV
+scan_classic.py live Bluetooth Classic (BR/EDR) scan via host adapter + CSV
+livetable.py    shared full-screen curses live-table UI
+scan.py         batch BLE scan -> CSV
 client.py       central: connect + GATT exploration
 emulate.py      peripheral: advertising + GATT server
-bledev/         shared utilities
+bledev/         shared BLE utilities
   device.py       open dongle + port autodetection
   manufacturers.py Company Identifier lookup from manufact.yaml
 manufact.yaml   Company Identifiers database (Bluetooth SIG)

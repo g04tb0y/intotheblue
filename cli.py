@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 
+import scan_classic
 import scan_live
 
 
@@ -41,10 +42,17 @@ def activity_scan() -> None:
     scan_live.run(port)
 
 
+def activity_classic() -> None:
+    """Live Bluetooth Classic (BR/EDR) scan via the host adapter."""
+    print()
+    scan_classic.run()
+
+
 # Activity registry: key -> (label, handler).
 # To add one: define the handler and register it here.
 ACTIVITIES: dict[str, tuple[str, callable]] = {
     "scan": ("Live BLE scan (table + CSV)", activity_scan),
+    "classic": ("Live Bluetooth Classic scan (BR/EDR)", activity_classic),
 }
 
 
