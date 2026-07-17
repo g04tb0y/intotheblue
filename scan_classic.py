@@ -251,11 +251,12 @@ def run() -> None:
     scanner = ClassicScanner()
     scanner.start()
     try:
-        livetable.run(scanner, COLUMNS, title="Classic")
+        selected = livetable.run(scanner, COLUMNS, title="Classic")
     finally:
         scanner.close()
 
     print(f"Scan finished. {len(scanner.devices)} classic devices seen.")
+    return selected
 
 
 if __name__ == "__main__":

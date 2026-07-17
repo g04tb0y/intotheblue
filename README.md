@@ -39,6 +39,22 @@ It shows a menu of activities; pick one, and when it finishes you're back at the
 menu. All tools autodetect the dongle's port from `/dev/serial/by-id` (fallback
 `/dev/ttyACM0`); you can force it with `--port`.
 
+**Interactive workflow** — in any live scan you don't copy-paste MAC addresses:
+move the highlight with ↑/↓ (or `j`/`k`), press **Enter** on a device, and it
+becomes the target of a follow-up action. `Q` quits the scan without selecting.
+
+- **BLE** → connect and open an interactive GATT browser: services and
+  characteristics are shown with their **SIG common name** (e.g. `2a00 Device Name`,
+  `180f Battery Service`, from blatann's `UUID_DESCRIPTION_MAP`), grouped by service.
+  Pick a characteristic by number to **read**, **write** (`hex:0a0b`, `text:hello`,
+  or auto) or **subscribe** to notifications. Read values are **interpreted** when
+  known — Device Name / Device Info as text, Battery Level as `%`, Appearance,
+  Tx Power (dBm), PnP ID, Heart Rate (bpm) — otherwise shown as hex + ASCII.
+- **Classic** → show device details (`bluetoothctl info`).
+
+The dongle stays open across the interaction: scanning is paused while you act on a
+device, then resumes — so after disconnecting you're back in the same scan.
+
 ### Live scan
 Full-screen table that updates continuously as advertising packets arrive. Rows are
 sorted by RSSI; the bottom bar shows the commands:

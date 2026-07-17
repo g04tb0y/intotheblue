@@ -8,8 +8,11 @@ Usage:
 """
 from __future__ import annotations
 
+import subprocess
 import sys
 
+import client
+import livetable
 import scan_classic
 import scan_live
 
@@ -35,17 +38,70 @@ def _prompt_int(message: str, default: int) -> int:
 
 # --- Activities -------------------------------------------------------------
 
+def _scan_interact_loop(scanner, columns, title, interact_fn) -> None:
+    """Live table loop: select a device -> act on it -> back to the same scan.
+
+    The scanner (and, for BLE, its open dongle) stays alive across interactions,
+    so we pause scanning, act, then resume — no close/reopen of the device.
+    Q in the table returns None and exits this loop back to the main menu.
+    """
+    while True:
+        selected = livetable.run(scanner, columns, title)
+        if selected is None:
+            return
+        scanner.pause()
+        try:
+            interact_fn(scanner, selected)
+        finally:
+            scanner.resume()
+
+
 def activity_scan() -> None:
-    """Live BLE scan: continuously updating table, CSV export."""
+    """Live BLE scan: continuously updating table, CSV export, GATT interaction."""
     port = _prompt("Dongle port (Enter = autodetect)") or None
-    print()
-    scan_live.run(port)
+    print("\nOpening the dongle...")
+    scanner = scan_live.LiveScanner(port)
+    scanner.open()
+    scanner.start()
+    try:
+        _scan_interact_loop(scanner, scan_live.COLUMNS, "BLE", _interact_ble)
+    finally:
+        scanner.close()
+
+
+def _interact_ble(scanner, rec) -> None:
+    """Act on a BLE device picked from the scan table (no MAC copy-paste)."""
+    print(f"\nSelected BLE device: {rec.address}  {rec.name or '(no name)'}"
+          f"  [{rec.protocol or rec.manufacturer or '-'}]")
+    if not rec.connectable:
+        print("  Note: not advertised as connectable — the connection may fail.")
+    if _prompt("Connect and browse GATT (read/write/subscribe)? [Y/n]", "Y").lower() in ("y", "yes"):
+        try:
+            # Reuse the scanner's already-open dongle (avoids a close/reopen).
+            client.interactive_gatt(scanner.ble_device, rec.peer)
+        except Exception as err:  # keep the CLI alive on connection errors
+            print(f"  Interaction error: {err}")
+    input("\nPress Enter to return to the scan...")
 
 
 def activity_classic() -> None:
     """Live Bluetooth Classic (BR/EDR) scan via the host adapter."""
     print()
-    scan_classic.run()
+    scanner = scan_classic.ClassicScanner()
+    scanner.start()
+    try:
+        _scan_interact_loop(scanner, scan_classic.COLUMNS, "Classic", _interact_classic)
+    finally:
+        scanner.close()
+
+
+def _interact_classic(scanner, rec) -> None:
+    """Act on a Classic device picked from the scan table."""
+    print(f"\nSelected Classic device: {rec.address}  {rec.name or '(no name)'}"
+          f"  [{rec.cod_label or '-'}]")
+    if _prompt("Show device details (bluetoothctl info)? [Y/n]", "Y").lower() in ("y", "yes"):
+        subprocess.run(["bluetoothctl", "info", rec.address])
+    input("\nPress Enter to return to the scan...")
 
 
 # Activity registry: key -> (label, handler).

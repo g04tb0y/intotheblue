@@ -94,6 +94,7 @@ class DeviceRecord:
     address: str
     addr_type: str = "?"
     name: str = ""
+    peer: object = None      # blatann BLEGapAddr, kept so we can reconnect precisely
     rssi: int = 0
     manufacturer: str = ""
     protocol: str = ""
@@ -110,6 +111,7 @@ class DeviceRecord:
         self.count += 1
         self.rssi = report.rssi
         self.addr_type = _addr_type_short(report)
+        self.peer = report.peer_address
 
         adv = report.advertise_data
         # report.device_name falls back to the address when there is no real name:
@@ -169,6 +171,11 @@ class LiveScanner:
     def open(self) -> None:
         self._ble_device = open_device(self._port)
         self._ble_device.scanner.on_scan_received.register(self._on_report)
+
+    @property
+    def ble_device(self):
+        """The open BleDevice, so interactions can reuse it (no close/reopen)."""
+        return self._ble_device
 
     def start(self) -> None:
         self._scanning.set()
@@ -252,11 +259,12 @@ def run(port: str | None = None) -> None:
     scanner.open()
     scanner.start()
     try:
-        livetable.run(scanner, COLUMNS, title="BLE")
+        selected = livetable.run(scanner, COLUMNS, title="BLE")
     finally:
         scanner.close()
 
     print(f"Scan finished. {len(scanner.devices)} devices seen.")
+    return selected
 
 
 if __name__ == "__main__":

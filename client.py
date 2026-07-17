@@ -12,12 +12,72 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import struct
 
+from blatann.bt_sig.uuids import UUID_DESCRIPTION_MAP
 from blatann.examples import example_utils
 
 from bledev import open_device
 
 logger = example_utils.setup_logger(level="INFO")
+
+# Common name (e.g. "Battery Level") for a SIG-assigned 16-bit UUID, keyed by int
+_NAME_BY_U16 = {k.uuid: v for k, v in UUID_DESCRIPTION_MAP.items()}
+
+
+def _u16(uuid) -> int | None:
+    """The 16-bit value of a UUID (works for both Uuid16 and base-derived Uuid128)."""
+    v = getattr(uuid, "uuid16", None)
+    if isinstance(v, int):
+        return v
+    v = getattr(uuid, "uuid", None)
+    return v if isinstance(v, int) else None
+
+
+def name_for_uuid(uuid) -> str:
+    """SIG common name for a UUID, or '' if unknown/custom."""
+    name = UUID_DESCRIPTION_MAP.get(uuid)
+    if name:
+        return name
+    u16 = _u16(uuid)
+    return _NAME_BY_U16.get(u16, "") if u16 is not None else ""
+
+
+def _appearance(value: int) -> str:
+    try:
+        from blatann.bt_sig.assigned_numbers import Appearance
+        return Appearance(value).name.replace("_", " ").title()
+    except Exception:
+        return f"0x{value:04X}"
+
+
+# 16-bit characteristics whose value is a UTF-8 string (Device Name + Device Info)
+_STRING_U16 = {0x2A00, 0x2A23, 0x2A24, 0x2A25, 0x2A26, 0x2A27, 0x2A28, 0x2A29}
+
+
+def _interpret(uuid, data: bytes) -> str | None:
+    """Best-effort human interpretation of a characteristic value; None if unknown."""
+    u16 = _u16(uuid)
+    if u16 is None or not data:
+        return None
+    try:
+        if u16 in _STRING_U16:
+            return '"' + data.decode("utf-8", "replace") + '"'
+        if u16 == 0x2A19:  # Battery Level
+            return f"{data[0]}%"
+        if u16 == 0x2A07:  # Tx Power Level
+            return f"{struct.unpack('<b', data[:1])[0]} dBm"
+        if u16 == 0x2A01 and len(data) >= 2:  # Appearance
+            return _appearance(struct.unpack("<H", data[:2])[0])
+        if u16 == 0x2A50 and len(data) >= 7:  # PnP ID
+            _src, vid, pid, ver = struct.unpack("<BHHH", data[:7])
+            return f"vendor=0x{vid:04X} product=0x{pid:04X} v{ver >> 8}.{(ver >> 4) & 0xF}.{ver & 0xF}"
+        if u16 == 0x2A37 and len(data) >= 2:  # Heart Rate Measurement
+            hr = struct.unpack("<H", data[1:3])[0] if data[0] & 1 else data[1]
+            return f"{hr} bpm"
+    except Exception:
+        return None
+    return None
 
 
 def _format_value(value: bytes) -> str:
@@ -35,26 +95,12 @@ def _on_notification(characteristic, event_args):
     logger.info("NOTIFY %s: %s", characteristic.uuid, _format_value(event_args.value))
 
 
-def main(port, name, address, timeout, do_subscribe):
-    ble_device = open_device(port)
-    ble_device.scanner.set_default_scan_params(timeout_seconds=timeout)
-
-    if address:
-        from blatann.gap.gap_types import PeerAddress
-        target_address = PeerAddress.from_string(address)
-    else:
-        logger.info("Scanning for '%s'...", name)
-        target_address = example_utils.find_target_device(ble_device, name)
-        if not target_address:
-            logger.error("Target device '%s' not found", name)
-            ble_device.close()
-            return
-
+def explore_peer(ble_device, target_address, do_subscribe=False):
+    """Connect to target_address, discover services and read readable chars."""
     logger.info("Connecting to %s", target_address)
     peer = ble_device.connect(target_address).wait()
     if not peer:
         logger.error("Connection failed/timed out")
-        ble_device.close()
         return
     logger.info("Connected (conn_handle=%s)", peer.conn_handle)
 
@@ -63,20 +109,16 @@ def main(port, name, address, timeout, do_subscribe):
 
     subscribed = []
     for service in peer.database.services:
-        logger.info("Service %s", service.uuid)
+        logger.info("Service %s %s", service.uuid, name_for_uuid(service.uuid))
         for char in service.characteristics:
-            flags = []
-            if char.readable:
-                flags.append("R")
-            if char.writable or char.writable_without_response:
-                flags.append("W")
-            if char.subscribable:
-                flags.append("N")
-            line = f"  Char {char.uuid} [{'/'.join(flags) or '-'}]"
+            line = f"  Char {char.uuid} {name_for_uuid(char.uuid)} [{_props(char)}]"
             if char.readable:
                 _, read_args = char.read().wait(5, exception_on_timeout=False)
                 if read_args is not None:
                     line += f" = {_format_value(read_args.value)}"
+                    interp = _interpret(char.uuid, read_args.value)
+                    if interp:
+                        line += f" → {interp}"
             logger.info(line)
             if do_subscribe and char.subscribable:
                 char.subscribe(_on_notification).wait(5, exception_on_timeout=False)
@@ -92,7 +134,150 @@ def main(port, name, address, timeout, do_subscribe):
 
     logger.info("Disconnecting")
     peer.disconnect().wait()
-    ble_device.close()
+
+
+def connect_and_explore(target_address, port=None, do_subscribe=False):
+    """Open the dongle, explore target_address (a BLEGapAddr or PeerAddress), close."""
+    ble_device = open_device(port)
+    try:
+        explore_peer(ble_device, target_address, do_subscribe)
+    finally:
+        ble_device.close()
+
+
+# --- Interactive GATT browser ----------------------------------------------
+
+def _props(char) -> str:
+    flags = []
+    if char.readable:
+        flags.append("R")
+    if char.writable or char.writable_without_response:
+        flags.append("W")
+    if char.subscribable:
+        flags.append("N")
+    return "/".join(flags) or "-"
+
+
+def _parse_write_value(text: str) -> bytes:
+    """Parse a write value: 'hex:0a0b', 'text:hello', or auto (hex if it looks
+    like hex, else UTF-8 text)."""
+    text = text.strip()
+    low = text.lower()
+    if low.startswith("hex:"):
+        return bytes.fromhex(text[4:].strip().replace(" ", ""))
+    if low.startswith("text:"):
+        return text[5:].encode()
+    compact = text.replace(" ", "")
+    if compact and len(compact) % 2 == 0 and all(c in "0123456789abcdefABCDEF" for c in compact):
+        return bytes.fromhex(compact)
+    return text.encode()
+
+
+def _char_action(char, values, idx) -> None:
+    """Read/write/subscribe menu for a single characteristic."""
+    action = input(f"  Char {char.uuid} [{_props(char)}] — [r]ead [w]rite [s]ubscribe [b]ack: ").strip().lower()
+    if action == "r":
+        if not char.readable:
+            print("  Not readable.")
+            return
+        _, event_args = char.read().wait(5, exception_on_timeout=False)
+        if event_args is not None:
+            disp = _format_value(event_args.value)
+            interp = _interpret(char.uuid, event_args.value)
+            if interp:
+                disp += f"   → {interp}"
+            values[idx] = disp
+            print(f"  Read: {disp}")
+        else:
+            print("  Read failed/timed out.")
+    elif action == "w":
+        if not (char.writable or char.writable_without_response):
+            print("  Not writable.")
+            return
+        try:
+            data = _parse_write_value(input("  Value (hex:.. / text:.. / auto): "))
+        except ValueError:
+            print("  Invalid hex value.")
+            return
+        result = char.write(data).wait(5, exception_on_timeout=False)
+        print(f"  Wrote {data.hex(' ')} ({len(data)} bytes)" if result else "  Write failed/timed out.")
+    elif action == "s":
+        if not char.subscribable:
+            print("  Not subscribable.")
+            return
+
+        def _on_notify(c, e):
+            print(f"    NOTIFY {c.uuid}: {_format_value(e.value)}")
+
+        char.subscribe(_on_notify).wait(5, exception_on_timeout=False)
+        print("  Subscribed — listening 15s (Ctrl-C to stop)...")
+        try:
+            from blatann.waitables import GenericWaitable
+            GenericWaitable().wait(15, exception_on_timeout=False)
+        except KeyboardInterrupt:
+            pass
+        try:
+            char.unsubscribe()
+        except Exception:
+            pass
+
+
+def interactive_gatt(ble_device, target_address) -> None:
+    """Connect to target_address and interactively browse/read/write its GATT."""
+    print(f"Connecting to {target_address} ...")
+    peer = ble_device.connect(target_address).wait()
+    if not peer:
+        print("  Connection failed/timed out.")
+        return
+    print("  Connected. Discovering services...")
+    peer.discover_services().wait(10, exception_on_timeout=False)
+
+    chars = [(svc, ch) for svc in peer.database.services for ch in svc.characteristics]
+    if not chars:
+        print("  No characteristics found.")
+        peer.disconnect().wait()
+        return
+
+    values: dict[int, str] = {}
+    try:
+        while True:
+            print("\nCharacteristics:")
+            last_svc = None
+            for i, (svc, ch) in enumerate(chars, 1):
+                if svc is not last_svc:
+                    sname = name_for_uuid(svc.uuid)
+                    print(f"  Service {svc.uuid} {sname}".rstrip())
+                    last_svc = svc
+                cname = name_for_uuid(ch.uuid)
+                label = f"{ch.uuid}" + (f" {cname}" if cname else "")
+                val = f"  = {values[i]}" if i in values else ""
+                print(f"    {i:2}) [{_props(ch):5}] {label}{val}")
+            sel = input("Select # (q = disconnect): ").strip().lower()
+            if sel in ("q", "quit"):
+                break
+            if sel.isdigit() and 1 <= int(sel) <= len(chars):
+                _char_action(chars[int(sel) - 1][1], values, int(sel))
+    finally:
+        print("Disconnecting.")
+        peer.disconnect().wait()
+
+
+def main(port, name, address, timeout, do_subscribe):
+    ble_device = open_device(port)
+    try:
+        if address:
+            from blatann.gap.gap_types import PeerAddress
+            target_address = PeerAddress.from_string(address)
+        else:
+            ble_device.scanner.set_default_scan_params(timeout_seconds=timeout)
+            logger.info("Scanning for '%s'...", name)
+            target_address = example_utils.find_target_device(ble_device, name)
+            if not target_address:
+                logger.error("Target device '%s' not found", name)
+                return
+        explore_peer(ble_device, target_address, do_subscribe)
+    finally:
+        ble_device.close()
 
 
 if __name__ == "__main__":
