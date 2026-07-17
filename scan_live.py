@@ -87,6 +87,33 @@ def _decode_protocol(adv) -> str:
     return ""
 
 
+# Google Fast Pair Service (GFPS) advertises under this 16-bit UUID
+_FAST_PAIR_UUID = 0xFE2C
+
+
+def _uuid16(u) -> int | None:
+    v = getattr(u, "uuid16", None)
+    if isinstance(v, int):
+        return v
+    v = getattr(u, "uuid", None)
+    return v if isinstance(v, int) else None
+
+
+def _fast_pair(adv) -> str:
+    """Identify Fast Pair advertising (UUID 0xFE2C). Returns the 3-byte model id
+    (discoverable mode), 'Yes' (non-discoverable), or '' if not Fast Pair.
+    Identification only — no Fast Pair protocol interaction."""
+    sd = adv.service_data
+    if sd and len(sd) >= 2 and int.from_bytes(sd[:2], "little") == _FAST_PAIR_UUID:
+        payload = bytes(sd[2:])
+        if len(payload) == 3:  # discoverable mode: 3-byte model id
+            return payload.hex().upper()
+        return "Yes"
+    if any(_uuid16(u) == _FAST_PAIR_UUID for u in adv.service_uuids):
+        return "Yes"
+    return ""
+
+
 # --- Data model -------------------------------------------------------------
 
 @dataclass
@@ -98,6 +125,7 @@ class DeviceRecord:
     rssi: int = 0
     manufacturer: str = ""
     protocol: str = ""
+    fast_pair: str = ""
     connectable: bool = False
     services: set = field(default_factory=set)
     flags: int | None = None
@@ -131,6 +159,10 @@ class DeviceRecord:
         if label:
             self.protocol = label
 
+        fp = _fast_pair(adv)
+        if fp:
+            self.fast_pair = fp
+
         for uuid in adv.service_uuids:
             self.services.add(str(uuid))
 
@@ -146,6 +178,7 @@ COLUMNS: list[livetable.Column] = [
     ("Name",          14, lambda d: d.name),
     ("RSSI",           5, lambda d: str(d.rssi)),
     ("Conn",           4, lambda d: "Yes" if d.connectable else "-"),
+    ("FastPair",       8, lambda d: d.fast_pair or "-"),
     ("Manufacturer",  18, lambda d: d.manufacturer),
     ("Type",          17, lambda d: d.protocol),
     ("Svc",            4, lambda d: str(len(d.services)) if d.services else "-"),
