@@ -1,0 +1,5 @@
+# Vincolo: richiede Python 3.10 (pc-ble-driver-py non ha wheel per Python >= 3.11).
+# Crea l'ambiente con:  uv venv --python 3.10 .venv310
+blatann==0.6.0
+PyYAML==6.0.3
+# pc-ble-driver-py==0.17.0 viene installato automaticamente come dipendenza di blatann.

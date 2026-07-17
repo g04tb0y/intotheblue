@@ -1,0 +1,13 @@
+# Ambiente virtuale (Python 3.10, ricreabile con requirements.txt)
+.venv
+.venv310
+
+# Output generati dalle scansioni
+csv/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Config tool serena
+.serena/
