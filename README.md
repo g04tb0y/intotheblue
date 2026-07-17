@@ -1,85 +1,114 @@
-# intotheblue — banco di collaudo BLE (dongle nRF52 + blatann)
+# intotheblue — BLE test bench (nRF52 dongle + blatann)
 
-Piccola bench per **sviluppare e collaudare dispositivi Bluetooth LE** usando un
-dongle Nordic **nRF52 con firmware Connectivity** pilotato via `blatann`.
+A small bench to **develop and test Bluetooth LE devices** using a Nordic
+**nRF52 dongle with Connectivity firmware** driven through `blatann`.
 
-Il dongle è un controller BLE completo: può fare da **central** (scanner / client
-GATT) e da **peripheral** (advertising / GATT server), quindi copre entrambi i lati
-di un test — cosa che le librerie basate sullo stack host (es. Bleak) non fanno.
+The dongle is a full BLE controller: it can act as **central** (scanner / GATT
+client) and as **peripheral** (advertising / GATT server), so it covers both sides
+of a test — something host-stack libraries (e.g. Bleak) cannot do.
 
-## Requisiti hardware
+## Hardware requirements
 
-Un dongle/board Nordic nRF52 flashato con il firmware **Connectivity** (SoftDevice
-serializzata). Collegato, si presenta come `nRF52 Connectivity`
-(VID `1915` / PID `c00a`) su una porta `/dev/ttyACMx`.
+A Nordic nRF52 dongle/board flashed with the **Connectivity** firmware (serialized
+SoftDevice). Once plugged in it shows up as `nRF52 Connectivity`
+(VID `1915` / PID `c00a`) on a `/dev/ttyACMx` port.
 
-## Setup ambiente
+## Environment setup
 
-> **Vincolo importante:** serve **Python 3.10**. `pc-ble-driver-py` (la libreria
-> nativa Nordic sotto blatann) non pubblica wheel per Python ≥ 3.11, quindi con il
-> Python di sistema (3.13/3.14) l'installazione fallisce.
+> **Important constraint:** you need **Python 3.10**. `pc-ble-driver-py` (the native
+> Nordic library under blatann) does not publish wheels for Python ≥ 3.11, so with
+> the system Python (3.13/3.14) installation fails.
 
 ```bash
-# Crea un venv Python 3.10 (uv scarica l'interprete standalone)
+# Create a Python 3.10 venv (uv downloads a standalone interpreter)
 uv venv --python 3.10 .venv310
 
-# Installa le dipendenze
+# Install the dependencies
 .venv310/bin/python -m pip install -r requirements.txt
 ```
 
-## Uso
+## Usage
 
-Tutti gli script autorilevano la porta del dongle da `/dev/serial/by-id`
-(fallback `/dev/ttyACM0`); si può forzare con `--port`.
-
-### Scansione / inventario
-Rileva i device nel raggio, risolve il produttore dal Company Identifier ed esporta
-in `csv/output_<epoch>.csv`.
+The recommended entry point is the interactive CLI:
 
 ```bash
-.venv310/bin/python scan.py                 # autorileva il dongle
+.venv310/bin/python cli.py
+```
+
+It shows a menu of activities; pick one, and when it finishes you're back at the
+menu. All tools autodetect the dongle's port from `/dev/serial/by-id` (fallback
+`/dev/ttyACM0`); you can force it with `--port`.
+
+### Live scan
+Full-screen table that updates continuously as advertising packets arrive. Rows are
+sorted by RSSI; the bottom bar shows the commands:
+
+```
+  ^P  pause/resume scan      ^S  save to CSV      Q  quit
+```
+
+Columns include several device identifiers beyond the name: **Addr** (address type:
+`pub` = public, `rnd-*` = random), **Manufacturer** (from the Company Identifier),
+and **Type** — a decoded protocol/product label from the manufacturer payload or the
+service-data UUID (e.g. `Apple FindMy`, `MS SwiftPair`, `Xiaomi`, `Eddystone`). This
+identifies many devices that advertise no manufacturer field. The decoding tables
+live in `scan_live.py` (`_SERVICE_DATA_UUIDS`, `_APPLE_MSG_TYPES`) and are easy to
+extend.
+
+Also available standalone:
+
+```bash
+.venv310/bin/python scan_live.py
+```
+
+### Batch scan (scriptable)
+Non-interactive scan for a fixed duration, exports to `csv/output_<epoch>.csv`.
+
+```bash
 .venv310/bin/python scan.py --timeout 8
 ```
 
-### Central / client GATT
-Si connette a un target (per nome o indirizzo), scopre servizi e caratteristiche e
-legge quelle leggibili. Generico: funziona con qualunque device.
+### Central / GATT client
+Connects to a target (by name or address), discovers services and characteristics
+and reads the readable ones. Generic: works with any device.
 
 ```bash
 .venv310/bin/python client.py --name "MyDevice"
 .venv310/bin/python client.py --address AA:BB:CC:DD:EE:FF --subscribe
 ```
 
-### Peripheral / emulazione device
-Il dongle si annuncia e espone un servizio custom (RX write, TX notify con echo,
-contatore). Utile per testare app o un secondo central.
+### Peripheral / device emulation
+The dongle advertises and exposes a custom service (RX write, TX notify with echo,
+counter). Useful to test apps or a second central.
 
 ```bash
 .venv310/bin/python emulate.py --name "TestDevice"
 ```
 
-Per verificarlo: connettiti dal telefono con l'app **nRF Connect**, oppure con
-`client.py` da un secondo dongle.
+To verify it: connect from your phone with the **nRF Connect** app, or with
+`client.py` from a second dongle.
 
-## Struttura
+## Layout
 
 ```
-scan.py         inventario BLE -> CSV
-client.py       central: connessione + esplorazione GATT
+cli.py          interactive menu (entry point)
+scan_live.py    live scan: full-screen table + CSV
+scan.py         batch scan -> CSV
+client.py       central: connect + GATT exploration
 emulate.py      peripheral: advertising + GATT server
-bledev/         utility condivise
-  device.py       apertura dongle + autorilevamento porta
-  manufacturers.py risoluzione Company Identifier da manufact.yaml
-manufact.yaml   database Company Identifiers (Bluetooth SIG)
+bledev/         shared utilities
+  device.py       open dongle + port autodetection
+  manufacturers.py Company Identifier lookup from manufact.yaml
+manufact.yaml   Company Identifiers database (Bluetooth SIG)
 ```
 
-## Strade complementari (quando NON usare questo dongle)
+## Complementary paths (when NOT to use this dongle)
 
-- **nRF Sniffer** — riflashando il dongle con il firmware *nRF Sniffer for
-  Bluetooth LE* diventa uno sniffer passivo per **Wireshark**, ideale per debuggare
-  il traffico reale tra due device. È un firmware diverso dal Connectivity: dopo
-  averlo riflashato il dongle non funziona più con blatann finché non si ripristina
-  il Connectivity.
-- **Bleak** — libreria Python cross-platform che usa lo stack BLE dell'host (BlueZ
-  su Linux). Solo ruolo **central**, ma non richiede hardware dedicato: comoda come
-  fallback per test da lato host quando il dongle non è disponibile.
+- **nRF Sniffer** — reflashing the dongle with the *nRF Sniffer for Bluetooth LE*
+  firmware turns it into a passive sniffer for **Wireshark**, ideal to debug real
+  traffic between two devices. It is a different firmware from Connectivity: after
+  reflashing, the dongle no longer works with blatann until you restore the
+  Connectivity firmware.
+- **Bleak** — cross-platform Python library that uses the host BLE stack (BlueZ on
+  Linux). **Central** role only, but no dedicated hardware needed: handy as a
+  host-side fallback when the dongle is not available.

@@ -1,4 +1,4 @@
-"""bledev — utility condivise per il banco di collaudo BLE basato su blatann + dongle nRF52."""
+"""bledev — shared utilities for the BLE test bench (blatann + nRF52 dongle)."""
 from .device import find_dongle_port, open_device
 from .manufacturers import get_manufacturer, load_manufacturer_data
 

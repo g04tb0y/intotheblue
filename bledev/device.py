@@ -1,4 +1,4 @@
-"""Apertura del dongle nRF52 Connectivity con autorilevamento della porta seriale."""
+"""Open the nRF52 Connectivity dongle with serial-port autodetection."""
 from __future__ import annotations
 
 import glob
@@ -12,30 +12,29 @@ _FALLBACK_PORT = "/dev/ttyACM0"
 
 
 def find_dongle_port() -> str:
-    """Individua la porta del dongle Nordic nRF52 Connectivity.
+    """Locate the Nordic nRF52 Connectivity dongle's port.
 
-    Cerca prima un link stabile in /dev/serial/by-id contenente 'nRF52'
-    (indipendente dall'ordine di enumerazione USB). Se non trova nulla,
-    ripiega su /dev/ttyACM0.
+    Looks first for a stable link under /dev/serial/by-id containing 'nRF52'
+    (independent of USB enumeration order). Falls back to /dev/ttyACM0.
     """
     matches = glob.glob("/dev/serial/by-id/*nRF52*")
     if matches:
-        # Risolve il symlink verso il vero /dev/ttyACMx
+        # Resolve the symlink to the real /dev/ttyACMx
         return os.path.realpath(sorted(matches)[0])
     return _FALLBACK_PORT
 
 
 def open_device(port: str | None = None, configure: bool = False, retries: int = 3) -> BleDevice:
-    """Crea e apre un BleDevice sulla porta indicata (o autorilevata).
+    """Create and open a BleDevice on the given (or autodetected) port.
 
-    Con configure=True chiama BleDevice.configure() prima di open(): necessario
-    per il ruolo peripheral (dimensiona GATT server, UUID vendor, ecc.), che va
-    configurato *prima* dell'apertura.
+    With configure=True it calls BleDevice.configure() before open(): required
+    for the peripheral role (sizes the GATT server, vendor UUIDs, etc.), which
+    must be configured *before* opening.
 
-    L'apertura del dongle può fallire con NrfError.timeout se una sessione
-    precedente non ha rilasciato la porta pulita: si ritenta qualche volta
-    ricreando l'oggetto BleDevice (necessario perché il driver resta in stato
-    inconsistente dopo un open fallito).
+    Opening the dongle can fail with NrfError.timeout if a previous session did
+    not release the port cleanly: we retry a few times, recreating the BleDevice
+    each time (needed because the driver is left in an inconsistent state after a
+    failed open).
     """
     if port is None:
         port = find_dongle_port()
@@ -55,4 +54,4 @@ def open_device(port: str | None = None, configure: bool = False, retries: int =
                 pass
             if attempt < retries - 1:
                 time.sleep(2)
-    raise RuntimeError(f"Impossibile aprire il dongle su {port} dopo {retries} tentativi") from last_error
+    raise RuntimeError(f"Could not open the dongle on {port} after {retries} attempts") from last_error

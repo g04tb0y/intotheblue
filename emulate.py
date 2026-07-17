@@ -1,13 +1,13 @@
-"""Emula un device BLE: il dongle fa da peripheral (advertising + GATT server).
+"""Emulate a BLE device: the dongle acts as a peripheral (advertising + GATT server).
 
-Espone un servizio custom con tre caratteristiche, utile per collaudare app o
-altri central (es. app nRF Connect, oppure client.py su un secondo dongle):
+Exposes a custom service with three characteristics, useful to test apps or other
+centrals (e.g. the nRF Connect app, or client.py on a second dongle):
 
-  - RX  (write)          il central scrive dei byte
-  - TX  (notify)         il peripheral rimanda in notifica ciò che ha ricevuto (echo)
-  - counter (read/notify) contatore che si incrementa ogni secondo
+  - RX  (write)          the central writes some bytes
+  - TX  (notify)         the peripheral notifies back what it received (echo)
+  - counter (read/notify) counter that increments every second
 
-Uso:
+Usage:
     python emulate.py --name "TestDevice"
     python emulate.py --name "TestDevice" --duration 600
 """
@@ -29,7 +29,7 @@ from bledev import open_device
 
 logger = example_utils.setup_logger(level="INFO")
 
-# UUID base custom (Nordic-like). Slot 2-3 identificano servizio/caratteristica.
+# Custom base UUID (Nordic-like). Slots 2-3 identify service/characteristic.
 SERVICE_UUID = Uuid128("bede0001-8dca-4c1e-9f2a-001122334455")
 RX_CHAR_UUID = Uuid128("bede0002-8dca-4c1e-9f2a-001122334455")
 TX_CHAR_UUID = Uuid128("bede0003-8dca-4c1e-9f2a-001122334455")
@@ -37,7 +37,7 @@ COUNTER_CHAR_UUID = Uuid128("bede0004-8dca-4c1e-9f2a-001122334455")
 
 
 class CounterThread:
-    """Aggiorna la caratteristica contatore una volta al secondo finché vive."""
+    """Updates the counter characteristic once per second while alive."""
 
     def __init__(self, characteristic):
         self.characteristic = characteristic
@@ -59,16 +59,16 @@ class CounterThread:
 def _on_rx_write(characteristic, event_args):
     data = event_args.value
     logger.info("RX <- %s ('%s')", data.hex(" "), data.decode("ascii", "replace"))
-    # Echo verso la caratteristica TX (notifica al central se iscritto)
+    # Echo to the TX characteristic (notifies the central if subscribed)
     _on_rx_write.tx_char.set_value(data, notify_client=True)
 
 
 def _on_connect(peer, event_args):
-    logger.info("Central connesso" if peer else "Connessione in timeout")
+    logger.info("Central connected" if peer else "Connection timed out")
 
 
 def _on_disconnect(peer, event_args):
-    logger.info("Central disconnesso: %s", event_args.reason)
+    logger.info("Central disconnected: %s", event_args.reason)
 
 
 def main(port, name, duration):
@@ -77,7 +77,7 @@ def main(port, name, duration):
     ble_device.generic_access_service.device_name = name
     ble_device.generic_access_service.appearance = Appearance.computer
 
-    # Sicurezza aperta (nessun pairing) per massima interoperabilità in test
+    # Open security (no pairing) for maximum interoperability in tests
     from blatann.gap import IoCapabilities
     ble_device.client.security.set_security_params(
         passcode_pairing=False, bond=False, lesc_pairing=False,
@@ -113,12 +113,12 @@ def main(port, name, duration):
     ble_device.client.on_disconnect.register(_on_disconnect)
 
     ble_device.advertiser.start(timeout_sec=0, auto_restart=True)
-    logger.info("Advertising come '%s' (servizio %s) per %ds...", name, SERVICE_UUID, duration)
+    logger.info("Advertising as '%s' (service %s) for %ds...", name, SERVICE_UUID, duration)
 
     try:
         GenericWaitable().wait(duration, exception_on_timeout=False)
     except KeyboardInterrupt:
-        logger.info("Interrotto dall'utente")
+        logger.info("Interrupted by user")
 
     counter_thread.stop()
     logger.info("Stop advertising")
@@ -127,8 +127,8 @@ def main(port, name, duration):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=None, help="Porta seriale del dongle (default: autorilevata)")
-    parser.add_argument("--name", default="TestDevice", help="Nome advertising (default: TestDevice)")
-    parser.add_argument("--duration", type=int, default=600, help="Durata in secondi (default: 600)")
+    parser.add_argument("--port", default=None, help="Dongle serial port (default: autodetect)")
+    parser.add_argument("--name", default="TestDevice", help="Advertising name (default: TestDevice)")
+    parser.add_argument("--duration", type=int, default=600, help="Duration in seconds (default: 600)")
     args = parser.parse_args()
     main(args.port, args.name, args.duration)

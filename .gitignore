@@ -4,6 +4,7 @@
 
 # Output generati dalle scansioni
 csv/
+*.log
 
 # Cache Python
 __pycache__/

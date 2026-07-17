@@ -1,13 +1,13 @@
-"""Central GATT client generico: connette a un device e ne esplora il database.
+"""Generic central GATT client: connect to a device and explore its database.
 
-Il dongle fa da central: cerca un target (per nome o indirizzo), si connette,
-scopre servizi e caratteristiche e legge quelle leggibili. Pensato per collaudare
-QUALUNQUE device senza conoscerne in anticipo i servizi.
+The dongle acts as central: it looks for a target (by name or address), connects,
+discovers services and characteristics and reads the readable ones. Meant to test
+ANY device without knowing its services in advance.
 
-Uso:
+Usage:
     python client.py --name "MyDevice"
     python client.py --address AA:BB:CC:DD:EE:FF
-    python client.py --name "MyDevice" --subscribe   # resta in ascolto delle notifiche
+    python client.py --name "MyDevice" --subscribe   # keep listening for notifications
 """
 from __future__ import annotations
 
@@ -46,14 +46,14 @@ def main(port, name, address, timeout, do_subscribe):
         logger.info("Scanning for '%s'...", name)
         target_address = example_utils.find_target_device(ble_device, name)
         if not target_address:
-            logger.error("Target device '%s' non trovato", name)
+            logger.error("Target device '%s' not found", name)
             ble_device.close()
             return
 
     logger.info("Connecting to %s", target_address)
     peer = ble_device.connect(target_address).wait()
     if not peer:
-        logger.error("Connessione fallita/timeout")
+        logger.error("Connection failed/timed out")
         ble_device.close()
         return
     logger.info("Connected (conn_handle=%s)", peer.conn_handle)
@@ -83,7 +83,7 @@ def main(port, name, address, timeout, do_subscribe):
                 subscribed.append(char)
 
     if do_subscribe and subscribed:
-        logger.info("In ascolto delle notifiche per 30s (Ctrl-C per uscire)...")
+        logger.info("Listening for notifications for 30s (Ctrl-C to exit)...")
         try:
             from blatann.waitables import GenericWaitable
             GenericWaitable().wait(30, exception_on_timeout=False)
@@ -97,12 +97,12 @@ def main(port, name, address, timeout, do_subscribe):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=None, help="Porta seriale del dongle (default: autorilevata)")
-    parser.add_argument("--name", default=None, help="Nome advertising del device target")
-    parser.add_argument("--address", default=None, help="Indirizzo BLE del target (alternativo a --name)")
-    parser.add_argument("--timeout", type=int, default=6, help="Timeout scansione in secondi")
-    parser.add_argument("--subscribe", action="store_true", help="Iscriviti alle caratteristiche notificabili")
+    parser.add_argument("--port", default=None, help="Dongle serial port (default: autodetect)")
+    parser.add_argument("--name", default=None, help="Advertising name of the target device")
+    parser.add_argument("--address", default=None, help="Target BLE address (alternative to --name)")
+    parser.add_argument("--timeout", type=int, default=6, help="Scan timeout in seconds")
+    parser.add_argument("--subscribe", action="store_true", help="Subscribe to notifiable characteristics")
     args = parser.parse_args()
     if not args.name and not args.address:
-        parser.error("Specificare --name oppure --address")
+        parser.error("Provide --name or --address")
     main(args.port, args.name, args.address, args.timeout, args.subscribe)
