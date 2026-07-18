@@ -276,10 +276,25 @@ def _classic_device_menu(rec):
         return [
             ("p", "Profile capability enumeration (SDP, detection-only)",
              _leaf(lambda: _classic_profiles(rec))),
+            ("a", "PBAP phonebook access (needs a paired device)",
+             lambda: _pbap_menu(rec)),
             ("i", "Show raw device details (bluetoothctl info)",
              _leaf(lambda: subprocess.run(["bluetoothctl", "info", rec.address]))),
         ]
     return menu.Menu(title, build)
+
+
+def _pbap_menu(rec):
+    import pbap
+
+    def build():
+        return [
+            ("p", "Access probe (no contacts, read-only check)",
+             _leaf(lambda: print("\n" + pbap.probe(rec.address)))),
+            ("x", "Sample pull (bounded active extraction, 5 entries)",
+             _leaf(lambda: print("\n" + pbap.sample(rec.address, 5)))),
+        ]
+    return menu.Menu(f"PBAP {rec.address}", build)
 
 
 # Activity registry: key -> (label, handler).

@@ -78,8 +78,10 @@ and disconnects when you back out.
 - **Classic** → **Profile capability enumeration** — parse the device's SDP service
   records (from `bluetoothctl info`) into a profile checklist (A2DP, AVRCP, HFP/HSP,
   SPP serial channel, OBEX file transfer, PBAP, MAP, HID, PAN, SAP, Device ID);
-  detection only. Also: show raw `bluetoothctl info`. Classic profile signatures live
-  in `capabilities.py` (`classic_report`).
+  detection only. Also: **PBAP phonebook access** (`pbap.py`, needs a *paired* device)
+  — an *access probe* (opens a PBAP session and reports accepted/rejected, no contacts
+  read) and a bounded *sample pull* (a capped proof-of-exposure, never a bulk dump);
+  and show raw `bluetoothctl info`. Classic profile signatures live in `capabilities.py`.
 
 The dongle stays open across the interaction: scanning is paused while you act on a
 device, then resumes — so after disconnecting you're back in the same scan.

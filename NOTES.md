@@ -40,7 +40,15 @@ detailed change history; this file holds rationale, plans, and open questions.
 - **Roadmap depth**: active enumeration, richer peripheral/server interaction, and
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
-## Actions log
+## Actions log (recent first)
+
+- Added Classic **PBAP** (`pbap.py`) under the Classic device menu: *access probe*
+  (open OBEX PBAP session → accepted/rejected, no contacts) + bounded *sample pull*
+  (capped ≤20, default 5). Needs a **paired** device; never pairs/bypasses bonding.
+  **UNTESTED against a real PBAP server** (none available here) — obexctl success/`ls`/
+  handle parsing is best-effort; validate against a real paired phone. Menu key `b`
+  is reserved for Back, so PBAP uses `a`.
+
 
 - Initial bench built: BLE scan (batch + live), Classic scan, GATT client browser,
   peripheral emulation, interactive scan→select→act workflow, Fast Pair identification,
