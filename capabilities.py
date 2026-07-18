@@ -90,3 +90,39 @@ def report(services) -> str:
     lines.append("")
     lines.append("  Detection only — read from the GATT database, nothing invoked.")
     return "\n".join(lines)
+
+
+# --- Classic (BR/EDR) SDP profiles ------------------------------------------
+# (label, {16-bit SDP service class UUIDs}, note)
+_CLASSIC_PROFILES: list[tuple[str, set[int], str]] = [
+    ("Audio streaming (A2DP)", {0x110A, 0x110B, 0x110D}, "Advanced Audio Distribution (sink/source)."),
+    ("Remote control (AVRCP)", {0x110E, 0x110F}, "A/V remote control."),
+    ("Hands-free / Headset", {0x1108, 0x1112, 0x111E, 0x111F}, "Voice call audio (HFP/HSP)."),
+    ("Serial Port (SPP)", {0x1101}, "RFCOMM serial channel — common command/debug interface."),
+    ("Dial-up Networking (DUN)", {0x1103}, "Modem / dial-up networking."),
+    ("File transfer (OBEX)", {0x1105, 0x1106}, "Object Push / File Transfer."),
+    ("Phonebook (PBAP)", {0x112F, 0x1130}, "Phonebook access."),
+    ("Messaging (MAP)", {0x1132, 0x1134}, "Message access."),
+    ("HID", {0x1124}, "Human Interface Device — input attack surface."),
+    ("Networking (PAN)", {0x1115, 0x1116, 0x1117}, "Personal Area Network / BNEP."),
+    ("SIM Access (SAP)", {0x112D}, "SIM access."),
+    ("Device ID (PnP)", {0x1200}, "Device identification record."),
+]
+
+
+def classic_report(uuid16s: set[int], vendor_count: int = 0) -> str:
+    """Report Classic capabilities from a set of 16-bit SDP service-class UUIDs."""
+    detected = [(label, note) for label, sigs, note in _CLASSIC_PROFILES if uuid16s & sigs]
+    lines = ["Classic profile capabilities", "",
+             f"  {len(uuid16s)} SDP service class(es)"
+             + (f", {vendor_count} vendor/other UUID(s)" if vendor_count else ""), ""]
+    if detected:
+        lines.append("  Detected profiles:")
+        lines += [f"    + {label} — {note}" for label, note in detected]
+    elif uuid16s or vendor_count:
+        lines.append("  SDP records present but no known profile signatures matched.")
+    else:
+        lines.append("  No SDP profiles cached — connect or run `sdptool browse <addr>` to populate.")
+    lines.append("")
+    lines.append("  Detection only — read from BlueZ SDP records, nothing invoked.")
+    return "\n".join(lines)

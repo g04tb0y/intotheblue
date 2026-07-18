@@ -8,9 +8,6 @@ detailed change history; this file holds rationale, plans, and open questions.
 - [ ] Push pending local commits to `origin/devel` (branch is a few commits ahead).
 - [ ] Optional: make the `csv/` export order match the on-screen discovery order
       (currently CSV is sorted by RSSI).
-- [ ] Classic counterpart to the BLE capability fingerprint: enumerate SDP profiles
-      (A2DP/HFP/AVRCP/SPP/OBEX/HID/PAN…) by parsing the `UUID:` lines from
-      `bluetoothctl info`, which the Classic action already runs.
 
 ## Design decisions
 
@@ -51,3 +48,7 @@ detailed change history; this file holds rationale, plans, and open questions.
 - Added BLE **capability fingerprint** (`capabilities.py`): connects, enumerates GATT,
   matches a signature registry (DFU/OTA, HID, NUS, OTS, DIS, Mesh, IPSP, LE Audio,
   Media/Telephony) + attack-surface notes. Detection-only. Registry is extensible.
+- Added Classic **profile capability enumeration** (`capabilities.classic_report` +
+  `scan_classic.read_profiles`): parses SDP `UUID:` lines from `bluetoothctl info`
+  into a profile checklist (A2DP/AVRCP/HFP/SPP/OBEX/PBAP/MAP/HID/PAN/SAP/DID).
+  Detection-only. Parser validated against real soundbar output.

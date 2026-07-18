@@ -62,7 +62,11 @@ becomes the target of a follow-up action. `Q` quits the scan without selecting.
     or auto) or **subscribe** to notifications. Read values are **interpreted** when
     known — Device Name / Device Info as text, Battery Level as `%`, Appearance,
     Tx Power (dBm), PnP ID, Heart Rate (bpm) — otherwise shown as hex + ASCII.
-- **Classic** → show device details (`bluetoothctl info`).
+- **Classic** → **Profile capability enumeration** — parse the device's SDP service
+  records (from `bluetoothctl info`) into a profile checklist (A2DP, AVRCP, HFP/HSP,
+  SPP serial channel, OBEX file transfer, PBAP, MAP, HID, PAN, SAP, Device ID);
+  detection only. Also: show raw `bluetoothctl info`. Classic profile signatures live
+  in `capabilities.py` (`classic_report`).
 
 The dongle stays open across the interaction: scanning is paused while you act on a
 device, then resumes — so after disconnecting you're back in the same scan.

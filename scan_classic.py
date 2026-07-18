@@ -31,6 +31,29 @@ _PROMPT = re.compile(r"^\[[^\]]*\][#>] ")
 _EVENT = re.compile(r"\[(NEW|CHG|DEL)\] Device ([0-9A-F:]{17})(?: (.*?))?\s*$")
 # Header of an `info <mac>` response block: "Device AA:BB:.. (public)"
 _INFO_HEADER = re.compile(r"Device ([0-9A-F:]{17}) \((?:public|random)\)")
+# A SIG SDP service UUID inside an `info` UUID line: 0000XXXX-0000-1000-8000-00805f9b34fb
+_SDP_UUID = re.compile(r"\(0000([0-9a-fA-F]{4})-0000-1000-8000-00805f9b34fb\)")
+
+
+def read_profiles(address: str) -> tuple[set[int], int]:
+    """Return (set of 16-bit SDP service-class UUIDs, count of vendor/other UUIDs)
+    for a Classic device, parsed from `bluetoothctl info`. Detection only."""
+    try:
+        out = subprocess.run(["bluetoothctl", "info", address],
+                             capture_output=True, text=True, timeout=15).stdout
+    except (subprocess.SubprocessError, OSError):
+        return set(), 0
+    clean = _ANSI.sub("", out)
+    uuid16s: set[int] = set()
+    total = 0
+    for line in clean.splitlines():
+        if "UUID:" not in line:
+            continue
+        total += 1
+        m = _SDP_UUID.search(line)
+        if m:
+            uuid16s.add(int(m.group(1), 16))
+    return uuid16s, max(0, total - len(uuid16s))
 
 
 def _parse_rssi(value: str) -> int | None:

@@ -125,10 +125,16 @@ def _interact_classic(scanner, rec) -> None:
     print(f"\nSelected Classic device: {rec.address}  {rec.name or '(no name)'}"
           f"  [{rec.cod_label or '-'}]")
     action = _device_action("Actions:", [
-        ("i", "Show device details (bluetoothctl info)"),
+        ("p", "Profile capability enumeration (SDP, detection-only)"),
+        ("i", "Show raw device details (bluetoothctl info)"),
         ("b", "Back"),
-    ], default="i")
-    if action == "i":
+    ], default="p")
+    if action == "p":
+        import capabilities
+        uuid16s, vendor = scan_classic.read_profiles(rec.address)
+        print()
+        print(capabilities.classic_report(uuid16s, vendor))
+    elif action == "i":
         subprocess.run(["bluetoothctl", "info", rec.address])
     input("\nPress Enter to return to the scan...")
 
