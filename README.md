@@ -43,13 +43,19 @@ menu. All tools autodetect the dongle's port from `/dev/serial/by-id` (fallback
 move the highlight with ↑/↓ (or `j`/`k`), press **Enter** on a device, and it
 becomes the target of a follow-up action. `Q` quits the scan without selecting.
 
-- **BLE** → connect and open an interactive GATT browser: services and
-  characteristics are shown with their **SIG common name** (e.g. `2a00 Device Name`,
-  `180f Battery Service`, from blatann's `UUID_DESCRIPTION_MAP`), grouped by service.
-  Pick a characteristic by number to **read**, **write** (`hex:0a0b`, `text:hello`,
-  or auto) or **subscribe** to notifications. Read values are **interpreted** when
-  known — Device Name / Device Info as text, Battery Level as `%`, Appearance,
-  Tx Power (dBm), PnP ID, Heart Rate (bpm) — otherwise shown as hex + ASCII.
+- **BLE** → choose an action on the selected device:
+  - **Fast Pair GATT exposure check (passive)** — a read-only attack-surface
+    classification from the advertising already collected (Fast Pair `FE2C` GATT
+    service in/out of class, address-type identity/trackability, connectable,
+    vendor/services). Sends no packets; it only helps prioritise which devices merit
+    a scoped, authorised active test.
+  - **Connect and browse GATT** — open an interactive GATT browser: services and
+    characteristics are shown with their **SIG common name** (e.g. `2a00 Device Name`,
+    `180f Battery Service`, from blatann's `UUID_DESCRIPTION_MAP`), grouped by service.
+    Pick a characteristic by number to **read**, **write** (`hex:0a0b`, `text:hello`,
+    or auto) or **subscribe** to notifications. Read values are **interpreted** when
+    known — Device Name / Device Info as text, Battery Level as `%`, Appearance,
+    Tx Power (dBm), PnP ID, Heart Rate (bpm) — otherwise shown as hex + ASCII.
 - **Classic** → show device details (`bluetoothctl info`).
 
 The dongle stays open across the interaction: scanning is paused while you act on a

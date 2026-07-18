@@ -12,6 +12,7 @@ import subprocess
 import sys
 
 import client
+import exposure
 import livetable
 import scan_classic
 import scan_live
@@ -73,9 +74,14 @@ def _interact_ble(scanner, rec) -> None:
     """Act on a BLE device picked from the scan table (no MAC copy-paste)."""
     print(f"\nSelected BLE device: {rec.address}  {rec.name or '(no name)'}"
           f"  [{rec.protocol or rec.manufacturer or '-'}]")
-    if not rec.connectable:
-        print("  Note: not advertised as connectable — the connection may fail.")
-    if _prompt("Connect and browse GATT (read/write/subscribe)? [Y/n]", "Y").lower() in ("y", "yes"):
+    action = _prompt("Action — [f] Fast Pair GATT exposure check (passive)  "
+                     "[c]onnect & browse GATT  [b]ack", "f").lower()
+    if action in ("f", "fastpair", "exposure"):
+        print()
+        print(exposure.report(rec))  # passive: reads collected advertising only
+    elif action in ("c", "connect", "gatt"):
+        if not rec.connectable:
+            print("  Note: not advertised as connectable — the connection may fail.")
         try:
             # Reuse the scanner's already-open dongle (avoids a close/reopen).
             client.interactive_gatt(scanner.ble_device, rec.peer)
