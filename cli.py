@@ -90,18 +90,20 @@ def _interact_ble(scanner, rec) -> None:
           f"  [{rec.protocol or rec.manufacturer or '-'}]")
     action = _device_action("Actions:", [
         ("f", "Fast Pair GATT exposure check (passive)"),
+        ("k", "Capability fingerprint (connect, detection-only)"),
         ("c", "Connect & browse GATT (read/write/subscribe)"),
         ("b", "Back"),
     ], default="f")
     if action == "f":
         print()
         print(exposure.report(rec))  # passive: reads collected advertising only
-    elif action == "c":
+    elif action in ("k", "c"):
         if not rec.connectable:
             print("  Note: not advertised as connectable — the connection may fail.")
+        # Reuse the scanner's already-open dongle (avoids a close/reopen).
+        fn = client.capability_fingerprint if action == "k" else client.interactive_gatt
         try:
-            # Reuse the scanner's already-open dongle (avoids a close/reopen).
-            client.interactive_gatt(scanner.ble_device, rec.peer)
+            fn(scanner.ble_device, rec.peer)
         except Exception as err:  # keep the CLI alive on connection errors
             print(f"  Interaction error: {err}")
     input("\nPress Enter to return to the scan...")

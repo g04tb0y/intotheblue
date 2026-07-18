@@ -49,6 +49,12 @@ becomes the target of a follow-up action. `Q` quits the scan without selecting.
     service in/out of class, address-type identity/trackability, connectable,
     vendor/services). Sends no packets; it only helps prioritise which devices merit
     a scoped, authorised active test.
+  - **Capability fingerprint** — connect and enumerate the GATT database, then
+    report which known capabilities the device exposes (firmware update / DFU-OTA,
+    HID-over-GATT, Nordic UART serial channel, Object Transfer, Device Information,
+    Mesh, IPSP, LE Audio, Media/Telephony…) plus attack-surface notes (buttonless
+    DFU control point, writable characteristics, vendor services). Detection only —
+    reads the GATT database, invokes nothing. Signatures live in `capabilities.py`.
   - **Connect and browse GATT** — open an interactive GATT browser: services and
     characteristics are shown with their **SIG common name** (e.g. `2a00 Device Name`,
     `180f Battery Service`, from blatann's `UUID_DESCRIPTION_MAP`), grouped by service.

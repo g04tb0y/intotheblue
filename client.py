@@ -222,6 +222,25 @@ def _char_action(char, values, idx) -> None:
             pass
 
 
+def capability_fingerprint(ble_device, target_address) -> None:
+    """Connect, enumerate the GATT database and report detected capabilities.
+
+    Detection only: discovers services/characteristics and matches them against
+    the signature registry in capabilities.py. No writes or triggers.
+    """
+    import capabilities
+    print(f"Connecting to {target_address} ...")
+    peer = ble_device.connect(target_address).wait()
+    if not peer:
+        print("  Connection failed/timed out.")
+        return
+    print("  Connected. Discovering services...")
+    peer.discover_services().wait(10, exception_on_timeout=False)
+    print()
+    print(capabilities.report(peer.database.services))
+    peer.disconnect().wait()
+
+
 def interactive_gatt(ble_device, target_address) -> None:
     """Connect to target_address and interactively browse/read/write its GATT."""
     print(f"Connecting to {target_address} ...")
