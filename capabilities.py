@@ -192,6 +192,18 @@ _CLASSIC_PROFILES: list[tuple[str, set[int], str]] = [
 ]
 
 
+def classic_detected(uuid16s: set[int]) -> list[tuple[str, str]]:
+    """List (label, note) of Classic profiles present in the SDP UUID set."""
+    return [(label, note) for label, sigs, note in _CLASSIC_PROFILES if uuid16s & sigs]
+
+
+def classic_note(label: str) -> str:
+    for lbl, _sigs, note in _CLASSIC_PROFILES:
+        if lbl == label:
+            return note
+    return ""
+
+
 def classic_report(uuid16s: set[int], vendor_count: int = 0) -> str:
     """Report Classic capabilities from a set of 16-bit SDP service-class UUIDs."""
     detected = [(label, note) for label, sigs, note in _CLASSIC_PROFILES if uuid16s & sigs]

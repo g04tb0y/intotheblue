@@ -42,6 +42,13 @@ detailed change history; this file holds rationale, plans, and open questions.
 
 ## Actions log (recent first)
 
+- Restructured the **Classic device menu** for UI consistency with BLE: SDP profiles
+  are now **interactive nodes** (select *Serial Port (SPP)* → open console; *Phonebook
+  (PBAP)* → probe/sample; others → description), and added a **Pair / bond** action
+  (`scan_classic.pair`, box-initiated) since active actions need a bond and inbound
+  pairing fails in the VM. Helpers `capabilities.classic_detected/classic_note`.
+  Validated live on the Jabra (Profiles → SPP → console).
+
 - Added Classic **SPP serial console** (`spp.py` + `spp_console.py`): finds the Serial
   Port (0x1101) RFCOMM channel via `sdptool`, opens an interactive RFCOMM send/receive
   console. **Validated live** against a paired Jabra Evolve2 65 (channel 3). RFCOMM

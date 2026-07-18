@@ -35,6 +35,33 @@ _INFO_HEADER = re.compile(r"Device ([0-9A-F:]{17}) \((?:public|random)\)")
 _SDP_UUID = re.compile(r"\(0000([0-9a-fA-F]{4})-0000-1000-8000-00805f9b34fb\)")
 
 
+def pair(address: str, timeout: int = 50) -> str:
+    """Box-initiated pairing + trust via bluetoothctl (numeric-comparison auto-confirm).
+
+    Active pairing needs consent on the device (accept the prompt / grant access).
+    Inbound (device->box) pairing is unreliable in a VM, so we always initiate here.
+    """
+    print("  Pairing — accept the prompt on the device if it shows one "
+          "(and grant access if asked)...", flush=True)
+    script = (
+        "sleep 1; printf 'power on\\nagent KeyboardDisplay\\ndefault-agent\\nscan on\\n'; sleep 4; "
+        f"printf 'pair {address}\\n'; sleep 15; printf 'yes\\n'; sleep 6; "
+        f"printf 'trust {address}\\n'; sleep 2; printf 'info {address}\\nscan off\\nquit\\n'"
+    )
+    try:
+        res = subprocess.run(["bash", "-c", f"({script}) | bluetoothctl"],
+                             capture_output=True, text=True, timeout=timeout)
+        out = _ANSI.sub("", (res.stdout or "") + (res.stderr or ""))
+    except (subprocess.SubprocessError, OSError):
+        out = ""
+    low = out.lower()
+    if "paired: yes" in low or "pairing successful" in low:
+        return "  Paired and trusted."
+    if "failed" in low or "authentication failed" in low:
+        return "  Pairing failed — retry with the device in pairing mode."
+    return "  Pairing not confirmed — check the device and retry."
+
+
 def read_profiles(address: str) -> tuple[set[int], int]:
     """Return (set of 16-bit SDP service-class UUIDs, count of vendor/other UUIDs)
     for a Classic device, parsed from `bluetoothctl info`. Detection only."""

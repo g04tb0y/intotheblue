@@ -264,26 +264,50 @@ def _interact_classic(scanner, rec) -> None:
     menu.run(_classic_device_menu(rec))
 
 
-def _classic_profiles(rec):
-    uuid16s, vendor = scan_classic.read_profiles(rec.address)
-    print("\n" + capabilities.classic_report(uuid16s, vendor))
-
-
 def _classic_device_menu(rec):
     title = f"Classic {rec.address} {rec.name or ''}".rstrip()
 
     def build():
         return [
-            ("p", "Profile capability enumeration (SDP, detection-only)",
-             _leaf(lambda: _classic_profiles(rec))),
-            ("a", "PBAP phonebook access (needs a paired device)",
-             lambda: _pbap_menu(rec)),
-            ("s", "SPP serial console (RFCOMM, needs a paired device)",
-             _leaf(lambda: __import__("spp").console(rec.address))),
+            ("k", "Profiles & interactions (SDP)", lambda: _classic_profiles_menu(rec)),
+            ("p", "Pair / bond this device (needed for active actions)",
+             _leaf(lambda: print(scan_classic.pair(rec.address)))),
             ("i", "Show raw device details (bluetoothctl info)",
              _leaf(lambda: subprocess.run(["bluetoothctl", "info", rec.address]))),
         ]
     return menu.Menu(title, build)
+
+
+def _classic_profiles_menu(rec):
+    """Interactive SDP profiles: each detected profile is a node with its actions."""
+    def build():
+        uuid16s, vendor = scan_classic.read_profiles(rec.address)
+        detected = capabilities.classic_detected(uuid16s)
+        items = [("r", "Show full profile report",
+                  _leaf(lambda: print("\n" + capabilities.classic_report(uuid16s, vendor))))]
+        for i, (label, _note) in enumerate(detected, 1):
+            items.append((str(i), label, _classic_profile_opener(rec, label)))
+        if not detected:
+            items.append(("d", "No SDP profiles cached — pair/connect the device first",
+                          _leaf(lambda: None)))
+        return items
+    return menu.Menu(f"Profiles {rec.address}", build)
+
+
+def _classic_profile_opener(rec, label):
+    """A profile node: interactive actions for SPP/PBAP, info for the rest."""
+    def open_profile():
+        if label == "Phonebook (PBAP)":
+            return _pbap_menu(rec)
+        if label == "Serial Port (SPP)":
+            return menu.Menu(label, lambda: [
+                ("c", "Open serial console (RFCOMM, needs pairing)",
+                 _leaf(lambda: __import__("spp").console(rec.address))),
+            ])
+        return menu.Menu(label, lambda: [
+            ("d", "Description", _leaf(lambda: print(f"\n  {label}: {capabilities.classic_note(label)}"))),
+        ])
+    return open_profile
 
 
 def _pbap_menu(rec):

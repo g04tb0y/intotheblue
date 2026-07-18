@@ -75,18 +75,20 @@ and disconnects when you back out.
     or auto) or **subscribe** to notifications. Read values are **interpreted** when
     known — Device Name / Device Info as text, Battery Level as `%`, Appearance,
     Tx Power (dBm), PnP ID, Heart Rate (bpm) — otherwise shown as hex + ASCII.
-- **Classic** → **Profile capability enumeration** — parse the device's SDP service
-  records (from `bluetoothctl info`) into a profile checklist (A2DP, AVRCP, HFP/HSP,
-  SPP serial channel, OBEX file transfer, PBAP, MAP, HID, PAN, SAP, Device ID);
-  detection only. Also: **PBAP phonebook access** (`pbap.py`, needs a *paired* device)
-  — an *access probe* (opens a PBAP session and reports accepted/rejected, no contacts
-  read) and a bounded *sample pull* (protocol-bounded via the BlueZ D-Bus PullAll
-  `MaxCount` filter — only N entries leave the phone, never a bulk dump; the D-Bus call
-  runs in the system python3 via `pbap_pull.py`). **SPP serial console** (`spp.py`,
-  needs a *paired* device) — finds the Serial Port (0x1101) RFCOMM channel via SDP and
-  opens an interactive send/receive console over it (the RFCOMM socket runs in the
-  system python3 via `spp_console.py`, as the venv interpreter lacks AF_BLUETOOTH).
-  And show raw `bluetoothctl info`. Classic profile signatures live in `capabilities.py`.
+- **Classic** device menu:
+  - **Pair / bond** — box-initiated pairing (needed for active actions); inbound
+    pairing is unreliable in a VM, so `scan_classic.pair` always initiates from here.
+  - **Profiles & interactions (SDP)** — the device's SDP profiles (A2DP, AVRCP,
+    HFP/HSP, SPP, OBEX, PBAP, MAP, HID, PAN, SAP, Device ID) as **navigable nodes**:
+    - *Serial Port (SPP)* → **serial console**: finds the 0x1101 RFCOMM channel via
+      SDP and opens an interactive send/receive console (`spp.py` → `spp_console.py`,
+      run in the system python3 since the venv interpreter lacks AF_BLUETOOTH).
+    - *Phonebook (PBAP)* → **access probe** (session accepted/rejected, no contacts)
+      and a bounded **sample pull** (protocol-bounded via BlueZ D-Bus PullAll
+      `MaxCount` — only N entries leave the phone; runs in system python3 via
+      `pbap_pull.py`).
+    - other profiles → a description.
+  - **Show raw details** (`bluetoothctl info`). Signatures live in `capabilities.py`.
 
 The dongle stays open across the interaction: scanning is paused while you act on a
 device, then resumes — so after disconnecting you're back in the same scan.
