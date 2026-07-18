@@ -39,6 +39,20 @@ def _prompt_int(message: str, default: int) -> int:
 
 # --- Activities -------------------------------------------------------------
 
+def _device_action(title, options, default) -> str:
+    """Render a one-action-per-line menu and return the chosen key.
+
+    options is a list of (key, label). To add an action, add one entry here and
+    one branch in the caller — keeps the growing menu readable.
+    """
+    print(title)
+    for key, label in options:
+        print(f"  {key}) {label}")
+    choice = _prompt("Action", default).strip().lower()
+    keys = {k for k, _ in options}
+    return choice if choice in keys else default
+
+
 def _scan_interact_loop(scanner, columns, title, interact_fn) -> None:
     """Live table loop: select a device -> act on it -> back to the same scan.
 
@@ -74,12 +88,15 @@ def _interact_ble(scanner, rec) -> None:
     """Act on a BLE device picked from the scan table (no MAC copy-paste)."""
     print(f"\nSelected BLE device: {rec.address}  {rec.name or '(no name)'}"
           f"  [{rec.protocol or rec.manufacturer or '-'}]")
-    action = _prompt("Action — [f] Fast Pair GATT exposure check (passive)  "
-                     "[c]onnect & browse GATT  [b]ack", "f").lower()
-    if action in ("f", "fastpair", "exposure"):
+    action = _device_action("Actions:", [
+        ("f", "Fast Pair GATT exposure check (passive)"),
+        ("c", "Connect & browse GATT (read/write/subscribe)"),
+        ("b", "Back"),
+    ], default="f")
+    if action == "f":
         print()
         print(exposure.report(rec))  # passive: reads collected advertising only
-    elif action in ("c", "connect", "gatt"):
+    elif action == "c":
         if not rec.connectable:
             print("  Note: not advertised as connectable — the connection may fail.")
         try:
@@ -105,7 +122,11 @@ def _interact_classic(scanner, rec) -> None:
     """Act on a Classic device picked from the scan table."""
     print(f"\nSelected Classic device: {rec.address}  {rec.name or '(no name)'}"
           f"  [{rec.cod_label or '-'}]")
-    if _prompt("Show device details (bluetoothctl info)? [Y/n]", "Y").lower() in ("y", "yes"):
+    action = _device_action("Actions:", [
+        ("i", "Show device details (bluetoothctl info)"),
+        ("b", "Back"),
+    ], default="i")
+    if action == "i":
         subprocess.run(["bluetoothctl", "info", rec.address])
     input("\nPress Enter to return to the scan...")
 
