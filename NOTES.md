@@ -42,6 +42,13 @@ detailed change history; this file holds rationale, plans, and open questions.
 
 ## Actions log (recent first)
 
+- Fixed system-python invocation for the RFCOMM/D-Bus helpers: `subprocess.run(["python3", ...])`
+  resolved to the **venv** python (no AF_BLUETOOTH / dbus) when the CLI runs inside the
+  venv → AttributeError. Now `spp.py`/`pbap.py` call `/usr/bin/python3` explicitly
+  (`_system_python()`). Also: SPP console now runs `bluetoothctl connect` first (RFCOMM to
+  an idle paired device fails EBADE) and flags `br-connection-key-missing` (device dropped
+  the bond — re-pair). Headsets drop our bond when they reconnect to a phone.
+
 - Restructured the **Classic device menu** for UI consistency with BLE: SDP profiles
   are now **interactive nodes** (select *Serial Port (SPP)* → open console; *Phonebook
   (PBAP)* → probe/sample; others → description), and added a **Pair / bond** action

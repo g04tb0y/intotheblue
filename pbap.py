@@ -29,6 +29,15 @@ _SESSION = re.compile(r"/org/bluez/obex/\S+session\d+", re.IGNORECASE)
 _STARTUP = 2.0
 
 
+def _system_python() -> str:
+    """The system python3 (has dbus-python); the project venv's does not, and PATH
+    may resolve `python3` to the venv when the CLI runs inside it."""
+    for cand in ("/usr/bin/python3", "/usr/local/bin/python3"):
+        if os.path.exists(cand):
+            return cand
+    return "python3"
+
+
 def _run_obexctl(commands: list[tuple[str, float]], timeout: float) -> str:
     """Drive obexctl via a `(sleep; printf ...) | obexctl` pipeline.
 
@@ -80,7 +89,7 @@ def sample(address: str, count: int = 5) -> str:
     env = dict(os.environ)
     env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     try:
-        res = subprocess.run(["python3", helper, address, str(count)],
+        res = subprocess.run([_system_python(), helper, address, str(count)],
                              capture_output=True, text=True, timeout=45, env=env)
     except subprocess.TimeoutExpired:
         return "PBAP sample: timed out."
