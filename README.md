@@ -82,8 +82,11 @@ and disconnects when you back out.
   — an *access probe* (opens a PBAP session and reports accepted/rejected, no contacts
   read) and a bounded *sample pull* (protocol-bounded via the BlueZ D-Bus PullAll
   `MaxCount` filter — only N entries leave the phone, never a bulk dump; the D-Bus call
-  runs in the system python3 via `pbap_pull.py`); and show raw `bluetoothctl info`.
-  Classic profile signatures live in `capabilities.py`.
+  runs in the system python3 via `pbap_pull.py`). **SPP serial console** (`spp.py`,
+  needs a *paired* device) — finds the Serial Port (0x1101) RFCOMM channel via SDP and
+  opens an interactive send/receive console over it (the RFCOMM socket runs in the
+  system python3 via `spp_console.py`, as the venv interpreter lacks AF_BLUETOOTH).
+  And show raw `bluetoothctl info`. Classic profile signatures live in `capabilities.py`.
 
 The dongle stays open across the interaction: scanning is paused while you act on a
 device, then resumes — so after disconnecting you're back in the same scan.

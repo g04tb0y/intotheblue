@@ -42,6 +42,12 @@ detailed change history; this file holds rationale, plans, and open questions.
 
 ## Actions log (recent first)
 
+- Added Classic **SPP serial console** (`spp.py` + `spp_console.py`): finds the Serial
+  Port (0x1101) RFCOMM channel via `sdptool`, opens an interactive RFCOMM send/receive
+  console. **Validated live** against a paired Jabra Evolve2 65 (channel 3). RFCOMM
+  socket runs in the **system python3** — the venv interpreter is built WITHOUT
+  AF_BLUETOOTH (checked). Needs a paired device.
+
 - Added Classic **PBAP** (`pbap.py`) under the Classic device menu: *access probe*
   (obexctl OBEX session → accepted/rejected, no contacts) + bounded *sample pull*.
   **Validated live** against a paired OnePlus Nord. Needs a **paired** device; never

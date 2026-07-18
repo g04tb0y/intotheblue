@@ -278,6 +278,8 @@ def _classic_device_menu(rec):
              _leaf(lambda: _classic_profiles(rec))),
             ("a", "PBAP phonebook access (needs a paired device)",
              lambda: _pbap_menu(rec)),
+            ("s", "SPP serial console (RFCOMM, needs a paired device)",
+             _leaf(lambda: __import__("spp").console(rec.address))),
             ("i", "Show raw device details (bluetoothctl info)",
              _leaf(lambda: subprocess.run(["bluetoothctl", "info", rec.address]))),
         ]
