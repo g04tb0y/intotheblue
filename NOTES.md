@@ -43,11 +43,16 @@ detailed change history; this file holds rationale, plans, and open questions.
 ## Actions log (recent first)
 
 - Added Classic **PBAP** (`pbap.py`) under the Classic device menu: *access probe*
-  (open OBEX PBAP session → accepted/rejected, no contacts) + bounded *sample pull*
-  (capped ≤20, default 5). Needs a **paired** device; never pairs/bypasses bonding.
-  **UNTESTED against a real PBAP server** (none available here) — obexctl success/`ls`/
-  handle parsing is best-effort; validate against a real paired phone. Menu key `b`
-  is reserved for Back, so PBAP uses `a`.
+  (obexctl OBEX session → accepted/rejected, no contacts) + bounded *sample pull*.
+  **Validated live** against a paired OnePlus Nord. Needs a **paired** device; never
+  pairs/bypasses bonding. Key findings: obexctl `pull` can't fetch a single vCard
+  (only the whole book), so the bounded sample uses BlueZ D-Bus
+  `PhonebookAccess1.PullAll` with the **`MaxCount`** filter (not `MaxListCount`) — a
+  true protocol-level bound. That D-Bus call runs in the **system python3**
+  (dbus-python isn't in the venv) via `pbap_pull.py`. Menu key `b` = Back, so PBAP
+  uses `a`. Pairing a phone in this VM only worked **box-initiated** with
+  `agent KeyboardDisplay` + numeric-comparison confirm; inbound (phone→box) never
+  reached the stack.
 
 
 - Initial bench built: BLE scan (batch + live), Classic scan, GATT client browser,

@@ -80,8 +80,10 @@ and disconnects when you back out.
   SPP serial channel, OBEX file transfer, PBAP, MAP, HID, PAN, SAP, Device ID);
   detection only. Also: **PBAP phonebook access** (`pbap.py`, needs a *paired* device)
   — an *access probe* (opens a PBAP session and reports accepted/rejected, no contacts
-  read) and a bounded *sample pull* (a capped proof-of-exposure, never a bulk dump);
-  and show raw `bluetoothctl info`. Classic profile signatures live in `capabilities.py`.
+  read) and a bounded *sample pull* (protocol-bounded via the BlueZ D-Bus PullAll
+  `MaxCount` filter — only N entries leave the phone, never a bulk dump; the D-Bus call
+  runs in the system python3 via `pbap_pull.py`); and show raw `bluetoothctl info`.
+  Classic profile signatures live in `capabilities.py`.
 
 The dongle stays open across the interaction: scanning is paused while you act on a
 device, then resumes — so after disconnecting you're back in the same scan.

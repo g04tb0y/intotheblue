@@ -19,56 +19,44 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
-import tempfile
-import threading
-import time
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _SESSION = re.compile(r"/org/bluez/obex/\S+session\d+", re.IGNORECASE)
-_VCARD_HANDLE = re.compile(r"\b(\d+\.vcf)\b", re.IGNORECASE)
 
 # obexctl needs a moment on startup to acquire the obexd D-Bus client proxy
 _STARTUP = 2.0
 
 
 def _run_obexctl(commands: list[tuple[str, float]], timeout: float) -> str:
-    """Drive obexctl with a startup delay, then the (command, wait) script."""
+    """Drive obexctl via a `(sleep; printf ...) | obexctl` pipeline.
+
+    obexctl needs a moment on startup to acquire the obexd D-Bus proxy, and each
+    command needs a settle delay; a timed shell pipeline feeds them reliably (a
+    stdin-writing thread + communicate() races and loses the input).
+    """
+    parts = [f"sleep {_STARTUP}"]
+    for cmd, wait in commands:
+        parts.append("printf '%s\\n' " + shlex.quote(cmd))
+        parts.append(f"sleep {wait}")
+    parts.append("printf 'quit\\n'")
+    script = "(" + "; ".join(parts) + ") | obexctl"
     try:
-        proc = subprocess.Popen(["obexctl"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+        res = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=timeout)
+        out = (res.stdout or "") + (res.stderr or "")
+    except subprocess.TimeoutExpired as err:
+        out = (err.stdout or "") + (err.stderr or "") if isinstance(err.stdout, str) else ""
     except (OSError, subprocess.SubprocessError) as err:
         return f"obexctl unavailable: {err}"
-
-    def feed():
-        time.sleep(_STARTUP)
-        for cmd, wait in commands:
-            try:
-                proc.stdin.write(cmd + "\n")
-                proc.stdin.flush()
-            except (BrokenPipeError, ValueError):
-                return
-            time.sleep(wait)
-        try:
-            proc.stdin.write("quit\n")
-            proc.stdin.flush()
-        except (BrokenPipeError, ValueError):
-            pass
-
-    threading.Thread(target=feed, daemon=True).start()
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, _ = proc.communicate()
-    return _ANSI.sub("", out or "").replace("\r", "")
+    return _ANSI.sub("", out).replace("\r", "")
 
 
 def probe(address: str) -> str:
     """Attempt a PBAP session; report accepted/rejected. No contacts pulled."""
     out = _run_obexctl([(f"connect {address} pbap", 7)], timeout=16)
     low = out.lower()
-    if _SESSION.search(out):
+    if _SESSION.search(out) or "connection successful" in low:
         return ("PBAP access probe: SESSION ACCEPTED — phonebook is reachable on this "
                 "(paired) link. Exposure confirmed; no contacts were read.")
     if "not available" in low or "proxy" in low:
@@ -80,60 +68,38 @@ def probe(address: str) -> str:
 
 
 def sample(address: str, count: int = 5) -> str:
-    """Pull up to `count` phonebook entries as a bounded proof of exposure."""
-    count = max(1, min(count, 20))  # hard cap: this is a PoC, not a dump
-    tmpdir = tempfile.mkdtemp(prefix="pbap_poc_")
-    # First list entries, then pull only the first `count` handles individually.
-    commands = [(f"connect {address} pbap", 7), ("cd telecom/pb", 2), ("ls", 3)]
-    list_out = _run_obexctl(commands, timeout=18)
-    if not _SESSION.search(list_out):
-        _cleanup(tmpdir)
-        return "PBAP sample: could not open a session (see the access probe first)."
+    """Pull up to `count` phonebook entries as a bounded proof of exposure.
 
-    handles = []
-    for m in _VCARD_HANDLE.finditer(list_out):
-        h = m.group(1)
-        if h not in handles:
-            handles.append(h)
-        if len(handles) >= count:
-            break
-    if not handles:
-        _cleanup(tmpdir)
-        return "PBAP sample: session opened but no vCard entries could be listed."
-
-    pull_cmds = [(f"connect {address} pbap", 7), ("cd telecom/pb", 2)]
-    for h in handles:
-        pull_cmds.append((f"pull {h} {os.path.join(tmpdir, h)}", 2))
-    pull_cmds.append(("disconnect", 1))
-    _run_obexctl(pull_cmds, timeout=20 + 3 * len(handles))
-
-    entries = []
-    for h in handles:
-        path = os.path.join(tmpdir, h)
-        if os.path.exists(path):
-            try:
-                with open(path, "r", errors="replace") as f:
-                    entries.append((h, f.read().strip()))
-            finally:
-                os.remove(path)
-    _cleanup(tmpdir)
-
-    if not entries:
-        return "PBAP sample: no entries were retrieved."
-    lines = [f"PBAP sample — {len(entries)} of first {count} entries (bounded PoC):", ""]
-    for h, text in entries:
-        lines.append(f"  [{h}]")
-        for line in text.splitlines():
-            lines.append(f"    {line}")
-        lines.append("")
-    lines.append("  Bounded proof of exposure — not a full phonebook dump.")
-    return "\n".join(lines)
-
-
-def _cleanup(tmpdir: str) -> None:
+    Bounded at the protocol level via the BlueZ D-Bus PhonebookAccess1.PullAll
+    `MaxCount` filter (obexctl cannot pull a single entry, only the whole book), so
+    only `count` entries ever leave the phone. The D-Bus call runs in the system
+    python3 (dbus-python is not in the venv) via pbap_pull.py.
+    """
+    count = max(1, min(count, 20))
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pbap_pull.py")
+    env = dict(os.environ)
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{os.getuid()}/bus")
     try:
-        for name in os.listdir(tmpdir):
-            os.remove(os.path.join(tmpdir, name))
-        os.rmdir(tmpdir)
-    except OSError:
-        pass
+        res = subprocess.run(["python3", helper, address, str(count)],
+                             capture_output=True, text=True, timeout=45, env=env)
+    except subprocess.TimeoutExpired:
+        return "PBAP sample: timed out."
+    except (OSError, subprocess.SubprocessError) as err:
+        return f"PBAP sample: helper failed: {err}"
+
+    data = res.stdout
+    if not data.strip():
+        detail = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "no data"
+        return (f"PBAP sample: nothing retrieved ({detail}). Is the device paired and "
+                f"contacts access granted on the phone?")
+
+    cards = [c for c in data.split("BEGIN:VCARD") if "END:VCARD" in c]
+    lines = [f"PBAP sample — {len(cards)} entries (MaxCount={count}, protocol-bounded):", ""]
+    for i, card in enumerate(cards):
+        lines.append(f"  [entry {i}]")
+        for line in ("BEGIN:VCARD" + card).splitlines():
+            if line.strip():
+                lines.append(f"    {line}")
+        lines.append("")
+    lines.append("  Bounded at the protocol level (MaxCount) — not a full phonebook dump.")
+    return "\n".join(lines)
