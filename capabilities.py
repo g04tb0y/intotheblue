@@ -44,6 +44,74 @@ _DFU_CONTROL_CHARS = {
     "00001531-1212-efde-1523-785feabcd123",   # Nordic legacy DFU control point
 }
 
+# DFU/OTA variant by service UUID
+_DFU_VARIANT = {
+    "fe59": "Nordic Secure DFU",
+    "00001530-1212-efde-1523-785feabcd123": "Nordic Legacy DFU",
+    "fef5": "Dialog/Renesas SUOTA",
+    "1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0": "Silicon Labs OTA",
+    "f000ffc0-0451-4000-b000-000000000000": "TI OAD",
+}
+_DFU_BUTTONLESS = {
+    "8ec90003-f315-4f60-9fb8-838830daea50",
+    "8ec90004-f315-4f60-9fb8-838830daea50",
+}
+_DFU_CONTROL = {
+    "8ec90001-f315-4f60-9fb8-838830daea50",   # Nordic Secure DFU control point
+    "00001531-1212-efde-1523-785feabcd123",   # Nordic Legacy DFU control point
+}
+
+
+def dfu_exposure(services) -> str:
+    """Passive DFU/OTA exposure verification from the GATT structure.
+
+    Reports the variant, whether a buttonless (remote-trigger) characteristic is
+    present, and whether the control/entry characteristics are writable — i.e. an
+    unauthenticated remote OTA-trigger surface. It reads structure only and does
+    NOT trigger or upload anything.
+    """
+    dfu = [s for s in services if _norm(s.uuid) in signatures("Firmware update (DFU/OTA)")]
+    if not dfu:
+        return "No DFU/OTA service present."
+
+    lines = ["DFU / OTA exposure verification", ""]
+    buttonless = False
+    writable_ctrl = False
+    for svc in dfu:
+        variant = _DFU_VARIANT.get(_norm(svc.uuid), "unknown OTA")
+        lines.append(f"  Service {svc.uuid} — {variant}")
+        for ch in svc.characteristics:
+            u = _norm(ch.uuid)
+            props = []
+            if ch.readable:
+                props.append("read")
+            if ch.writable or ch.writable_without_response:
+                props.append("write")
+            if ch.subscribable:
+                props.append("notify")
+            tag = ""
+            if u in _DFU_BUTTONLESS:
+                buttonless = True
+                tag = "  <- buttonless (remote trigger)"
+            elif u in _DFU_CONTROL:
+                tag = "  <- control point"
+            if (u in _DFU_BUTTONLESS or u in _DFU_CONTROL) and "write" in props:
+                writable_ctrl = True
+            lines.append(f"    {ch.uuid} [{'/'.join(props) or '-'}]{tag}")
+
+    lines += ["", "  Reachable on the current connection, which was not paired/authenticated."]
+    if buttonless and writable_ctrl:
+        verdict = ("buttonless + writable control point reachable unauthenticated -> "
+                   "remotely triggerable OTA. HIGH exposure.")
+    elif writable_ctrl:
+        verdict = "writable OTA control point reachable unauthenticated -> exposed."
+    else:
+        verdict = "DFU service present but no writable trigger characteristic observed."
+    lines += ["", f"  Verdict: {verdict}", "",
+              "  Passive check — GATT structure only; DFU is NOT triggered. To attempt a",
+              "  trigger, use Interact -> Write on the control characteristic (your call)."]
+    return "\n".join(lines)
+
 
 def _norm(uuid) -> str:
     return str(uuid).lower()

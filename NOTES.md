@@ -61,3 +61,7 @@ detailed change history; this file holds rationale, plans, and open questions.
   Inspect → `client.read_all` (Device Information → read-all); Interact → write/subscribe
   + Nordic UART `client.serial_console`. Removed the old `capability_fingerprint` leaf.
   Registry helpers `capabilities.signatures/match_services`.
+- Firmware capability → Inspect → **DFU exposure verification** (`capabilities.dfu_exposure`):
+  passive; reports OTA variant, buttonless (remote-trigger) char, writable control point
+  on the unauthenticated link, with a verdict. Does NOT trigger/upload (brick risk stays
+  out; the generic Interact→Write can send a trigger at the tester's discretion).

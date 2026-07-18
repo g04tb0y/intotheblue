@@ -179,37 +179,29 @@ def _capability_opener(peer, label):
         svcs = capabilities.match_services(peer.database.services, label)
         pairs = [(s, c) for s in svcs for c in s.characteristics]
         is_nus = any(str(s.uuid).lower() == "6e400001-b5a3-f393-e0a9-e50e24dcca9e" for s in svcs)
-        has_read = any(c.readable for _s, c in pairs)
         has_active = is_nus or any(c.writable or c.writable_without_response or c.subscribable
                                    for _s, c in pairs)
 
         def build():
-            children = []
-            if has_read:
-                children.append(("i", "Inspect (read-only)", _inspect_opener(pairs)))
+            children = [("i", "Inspect (read-only)", _inspect_opener(label, svcs, pairs))]
             if has_active:
                 children.append(("x", "Interact (active)", _interact_opener(peer, pairs, is_nus)))
-            if not children:
-                children.append(("d", "Details (characteristics)",
-                                 _leaf(lambda: _print_pairs(pairs))))
             return children
         return menu.Menu(label, build)
     return open_cap
 
 
-def _print_pairs(pairs):
-    for svc, ch in pairs:
-        print("  " + client.char_label(svc, ch))
-
-
-def _inspect_opener(pairs):
+def _inspect_opener(label, svcs, pairs):
     def open_inspect():
         def build():
             items = [("a", "Read all readable characteristics", _leaf(lambda: client.read_all(pairs)))]
+            if label == "Firmware update (DFU/OTA)":
+                items.append(("d", "DFU exposure verification (passive)",
+                              _leaf(lambda: print("\n" + capabilities.dfu_exposure(svcs)))))
             for i, (svc, ch) in enumerate(pairs, 1):
                 if ch.readable:
-                    label = f"Read {ch.uuid} {client.name_for_uuid(ch.uuid)}".rstrip()
-                    items.append((str(i), label, _leaf(lambda ch=ch: client.read_char(ch))))
+                    lbl = f"Read {ch.uuid} {client.name_for_uuid(ch.uuid)}".rstrip()
+                    items.append((str(i), lbl, _leaf(lambda ch=ch: client.read_char(ch))))
             return items
         return menu.Menu("Inspect", build)
     return open_inspect

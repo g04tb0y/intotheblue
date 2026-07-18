@@ -62,8 +62,12 @@ and disconnects when you back out.
     Media/Telephony…) as navigable nodes. Each capability separates **Inspect
     (read-only)** — e.g. Device Information → *Read all* dumps manufacturer/model/
     firmware/PnP — from **Interact (active)** — write/subscribe to its
-    characteristics, or a Nordic UART serial console. A *Show full report* option
-    lists everything plus attack-surface notes. Signatures live in `capabilities.py`.
+    characteristics, or a Nordic UART serial console. Firmware update → Inspect →
+    *DFU exposure verification* passively reports the OTA variant, whether a
+    buttonless (remote-trigger) characteristic is present and whether the control
+    point is writable on the unauthenticated link — without triggering anything.
+    A *Show full report* option lists everything plus attack-surface notes.
+    Signatures live in `capabilities.py`.
   - **Connect and browse GATT** — open an interactive GATT browser: services and
     characteristics are shown with their **SIG common name** (e.g. `2a00 Device Name`,
     `180f Battery Service`, from blatann's `UUID_DESCRIPTION_MAP`), grouped by service.
