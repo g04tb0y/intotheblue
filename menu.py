@@ -13,8 +13,23 @@ A breadcrumb of the current path is printed so depth is always visible.
 """
 from __future__ import annotations
 
+import sys
+
 BACK = object()
 EXIT = object()
+
+
+def _header(titles: list[str]) -> str:
+    """Marked, breadcrumb-style menu header: bar marker + path with the current
+    node highlighted, underlined by a rule. Colours only on a real terminal."""
+    plain = "▌ " + " ▸ ".join(titles)
+    rule = "─" * max(len(plain), 12)
+    if not sys.stdout.isatty():
+        return f"\n{plain}\n{rule}"
+    *ancestors, current = titles
+    crumb = ("\033[2m" + " ▸ ".join(ancestors) + " ▸ \033[0m") if ancestors else ""
+    crumb += "\033[1;36m" + current + "\033[0m"
+    return f"\n\033[36m▌\033[0m {crumb}\n\033[2m{rule}\033[0m"
 
 
 class Menu:
@@ -45,7 +60,7 @@ def run(root: Menu) -> None:
     while stack:
         node = stack[-1]
         items = node.build()
-        print("\n" + " > ".join(n.title for n in stack))
+        print(_header([n.title for n in stack]))
         for key, label, _ in items:
             print(f"  {key}) {label}")
         print("  b) Back")
