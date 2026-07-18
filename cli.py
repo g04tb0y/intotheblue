@@ -95,8 +95,8 @@ def _ble_device_menu(scanner, rec):
         return [
             ("f", "Fast Pair GATT exposure check (passive)",
              _leaf(lambda: print("\n" + exposure.report(rec)))),
-            ("k", "Capability fingerprint (connect, detection-only)",
-             _leaf(lambda: client.capability_fingerprint(scanner.ble_device, rec.peer))),
+            ("k", "Capabilities (connect: inspect & interact)",
+             lambda: _capabilities_menu(scanner, rec)),
             ("g", "Browse GATT (connect)", lambda: _gatt_menu(scanner, rec)),
         ]
     return menu.Menu(title, build)
@@ -135,6 +135,104 @@ def _gatt_menu(scanner, rec):
         return items
 
     return menu.Menu("GATT", build, on_enter=on_enter, on_leave=on_leave)
+
+
+def _capabilities_menu(scanner, rec):
+    """Capabilities node: connect, list detected capabilities as sub-nodes."""
+    state = {"peer": None, "detected": []}
+
+    def on_enter():
+        if not rec.connectable:
+            print("  Note: not advertised as connectable — the connection may fail.")
+        try:
+            peer = client.connect_and_discover(scanner.ble_device, rec.peer)
+        except Exception as err:
+            print(f"  Connection error: {err}")
+            return False
+        if peer is None:
+            return False
+        state["peer"] = peer
+        state["detected"], _flags, _ns, _nc = capabilities.analyze(peer.database.services)
+        return True
+
+    def on_leave():
+        if state["peer"]:
+            print("  Disconnecting.")
+            try:
+                state["peer"].disconnect().wait()
+            except Exception:
+                pass
+
+    def build():
+        items = [("r", "Show full capability report",
+                  _leaf(lambda: print("\n" + capabilities.report(state["peer"].database.services))))]
+        for i, (label, _note) in enumerate(state["detected"], 1):
+            items.append((str(i), label, _capability_opener(state["peer"], label)))
+        return items
+
+    return menu.Menu(f"Capabilities {rec.address}", build, on_enter=on_enter, on_leave=on_leave)
+
+
+def _capability_opener(peer, label):
+    """Open a single capability's node: Inspect (read-only) vs Interact (active)."""
+    def open_cap():
+        svcs = capabilities.match_services(peer.database.services, label)
+        pairs = [(s, c) for s in svcs for c in s.characteristics]
+        is_nus = any(str(s.uuid).lower() == "6e400001-b5a3-f393-e0a9-e50e24dcca9e" for s in svcs)
+        has_read = any(c.readable for _s, c in pairs)
+        has_active = is_nus or any(c.writable or c.writable_without_response or c.subscribable
+                                   for _s, c in pairs)
+
+        def build():
+            children = []
+            if has_read:
+                children.append(("i", "Inspect (read-only)", _inspect_opener(pairs)))
+            if has_active:
+                children.append(("x", "Interact (active)", _interact_opener(peer, pairs, is_nus)))
+            if not children:
+                children.append(("d", "Details (characteristics)",
+                                 _leaf(lambda: _print_pairs(pairs))))
+            return children
+        return menu.Menu(label, build)
+    return open_cap
+
+
+def _print_pairs(pairs):
+    for svc, ch in pairs:
+        print("  " + client.char_label(svc, ch))
+
+
+def _inspect_opener(pairs):
+    def open_inspect():
+        def build():
+            items = [("a", "Read all readable characteristics", _leaf(lambda: client.read_all(pairs)))]
+            for i, (svc, ch) in enumerate(pairs, 1):
+                if ch.readable:
+                    label = f"Read {ch.uuid} {client.name_for_uuid(ch.uuid)}".rstrip()
+                    items.append((str(i), label, _leaf(lambda ch=ch: client.read_char(ch))))
+            return items
+        return menu.Menu("Inspect", build)
+    return open_inspect
+
+
+def _interact_opener(peer, pairs, is_nus):
+    def open_interact():
+        def build():
+            items = []
+            if is_nus:
+                items.append(("c", "Serial console (send/receive)",
+                              _leaf(lambda: client.serial_console(peer))))
+            for i, (svc, ch) in enumerate(pairs, 1):
+                name = client.name_for_uuid(ch.uuid)
+                if ch.writable or ch.writable_without_response:
+                    items.append((f"w{i}", f"Write {ch.uuid} {name}".rstrip(),
+                                  _leaf(lambda ch=ch: client.write_char(ch))))
+                if ch.subscribable:
+                    items.append((f"s{i}", f"Subscribe {ch.uuid} {name}".rstrip(),
+                                  _leaf(lambda ch=ch: client.subscribe_char(ch))))
+            return items
+        return menu.Menu("Interact", build)
+    return open_interact
 
 
 def _read_into(char, values, idx):

@@ -49,6 +49,20 @@ def _norm(uuid) -> str:
     return str(uuid).lower()
 
 
+def signatures(label: str) -> set[str]:
+    """Service UUID signatures for a detected capability label."""
+    for lbl, sigs, _ in _CAPABILITIES:
+        if lbl == label:
+            return sigs
+    return set()
+
+
+def match_services(services, label: str):
+    """The device's service objects that belong to a given capability label."""
+    sigs = signatures(label)
+    return [s for s in services if _norm(s.uuid) in sigs]
+
+
 def analyze(services):
     """Return (detected, flags, n_services, n_chars) for a GATT service list."""
     svc_uuids: set[str] = set()

@@ -56,3 +56,8 @@ detailed change history; this file holds rationale, plans, and open questions.
   `Menu` nodes, universal Back, breadcrumb, `on_enter`/`on_leave` (GATT node connects/
   disconnects). GATT read/write/subscribe are now leaf nodes; replaced the bespoke
   `interactive_gatt`/`_device_action`. Live-validated (read of Device Name via tree).
+- Turned the BLE **Capabilities** action into navigable nodes: each detected capability
+  splits **Inspect (read-only)** vs **Interact (active)** into separate sub-menus.
+  Inspect → `client.read_all` (Device Information → read-all); Interact → write/subscribe
+  + Nordic UART `client.serial_console`. Removed the old `capability_fingerprint` leaf.
+  Registry helpers `capabilities.signatures/match_services`.

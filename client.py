@@ -233,6 +233,70 @@ def write_char(char):
     print(f"  Wrote {data.hex(' ')} ({len(data)} bytes)" if result else "  Write failed/timed out.")
 
 
+def read_all(pairs):
+    """Read every readable characteristic in (service, char) pairs, interpreted."""
+    read_any = False
+    for _svc, char in pairs:
+        if not char.readable:
+            continue
+        read_any = True
+        name = name_for_uuid(char.uuid) or str(char.uuid)
+        _, event_args = char.read().wait(5, exception_on_timeout=False)
+        if event_args is None:
+            print(f"  {name}: (read failed/timed out)")
+            continue
+        disp = _format_value(event_args.value)
+        interp = _interpret(char.uuid, event_args.value)
+        print(f"  {name}: {disp}" + (f"   → {interp}" if interp else ""))
+    if not read_any:
+        print("  No readable characteristics.")
+
+
+_NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"   # write
+_NUS_TX = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"   # notify
+
+
+def serial_console(peer):
+    """Interactive Nordic UART console: subscribe TX, send lines to RX."""
+    rx = tx = None
+    for svc in peer.database.services:
+        for char in svc.characteristics:
+            u = str(char.uuid).lower()
+            if u == _NUS_RX:
+                rx = char
+            elif u == _NUS_TX:
+                tx = char
+    if rx is None and tx is None:
+        print("  Nordic UART characteristics not found.")
+        return
+
+    if tx is not None and tx.subscribable:
+        tx.subscribe(lambda c, e: print(f"  << {e.value.decode('utf-8', 'replace')}")).wait(
+            5, exception_on_timeout=False)
+    print("  Serial console — type text to send (hex:.. / text:.. / auto), blank line to exit.")
+    try:
+        while True:
+            line = input("  >> ")
+            if line == "":
+                break
+            try:
+                data = _parse_write_value(line)
+            except ValueError:
+                print("  Invalid hex value.")
+                continue
+            if rx is not None:
+                rx.write(data).wait(5, exception_on_timeout=False)
+            else:
+                print("  No writable RX characteristic.")
+    except (EOFError, KeyboardInterrupt):
+        pass
+    if tx is not None:
+        try:
+            tx.unsubscribe()
+        except Exception:
+            pass
+
+
 def subscribe_char(char, seconds=15):
     """Subscribe and print notifications for a while, then unsubscribe."""
     if not char.subscribable:
@@ -253,25 +317,6 @@ def subscribe_char(char, seconds=15):
         char.unsubscribe()
     except Exception:
         pass
-
-
-def capability_fingerprint(ble_device, target_address) -> None:
-    """Connect, enumerate the GATT database and report detected capabilities.
-
-    Detection only: discovers services/characteristics and matches them against
-    the signature registry in capabilities.py. No writes or triggers.
-    """
-    import capabilities
-    print(f"Connecting to {target_address} ...")
-    peer = ble_device.connect(target_address).wait()
-    if not peer:
-        print("  Connection failed/timed out.")
-        return
-    print("  Connected. Discovering services...")
-    peer.discover_services().wait(10, exception_on_timeout=False)
-    print()
-    print(capabilities.report(peer.database.services))
-    peer.disconnect().wait()
 
 
 def main(port, name, address, timeout, do_subscribe):

@@ -56,12 +56,14 @@ and disconnects when you back out.
     service in/out of class, address-type identity/trackability, connectable,
     vendor/services). Sends no packets; it only helps prioritise which devices merit
     a scoped, authorised active test.
-  - **Capability fingerprint** — connect and enumerate the GATT database, then
-    report which known capabilities the device exposes (firmware update / DFU-OTA,
-    HID-over-GATT, Nordic UART serial channel, Object Transfer, Device Information,
-    Mesh, IPSP, LE Audio, Media/Telephony…) plus attack-surface notes (buttonless
-    DFU control point, writable characteristics, vendor services). Detection only —
-    reads the GATT database, invokes nothing. Signatures live in `capabilities.py`.
+  - **Capabilities** — connect and enumerate the GATT database, then present the
+    detected capabilities (firmware update / DFU-OTA, HID-over-GATT, Nordic UART
+    serial channel, Object Transfer, Device Information, Mesh, IPSP, LE Audio,
+    Media/Telephony…) as navigable nodes. Each capability separates **Inspect
+    (read-only)** — e.g. Device Information → *Read all* dumps manufacturer/model/
+    firmware/PnP — from **Interact (active)** — write/subscribe to its
+    characteristics, or a Nordic UART serial console. A *Show full report* option
+    lists everything plus attack-surface notes. Signatures live in `capabilities.py`.
   - **Connect and browse GATT** — open an interactive GATT browser: services and
     characteristics are shown with their **SIG common name** (e.g. `2a00 Device Name`,
     `180f Battery Service`, from blatann's `UUID_DESCRIPTION_MAP`), grouped by service.
