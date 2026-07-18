@@ -173,53 +173,86 @@ def _parse_write_value(text: str) -> bytes:
     return text.encode()
 
 
-def _char_action(char, values, idx) -> None:
-    """Read/write/subscribe menu for a single characteristic."""
-    action = input(f"  Char {char.uuid} [{_props(char)}] — [r]ead [w]rite [s]ubscribe [b]ack: ").strip().lower()
-    if action == "r":
-        if not char.readable:
-            print("  Not readable.")
-            return
-        _, event_args = char.read().wait(5, exception_on_timeout=False)
-        if event_args is not None:
-            disp = _format_value(event_args.value)
-            interp = _interpret(char.uuid, event_args.value)
-            if interp:
-                disp += f"   → {interp}"
-            values[idx] = disp
-            print(f"  Read: {disp}")
-        else:
-            print("  Read failed/timed out.")
-    elif action == "w":
-        if not (char.writable or char.writable_without_response):
-            print("  Not writable.")
-            return
-        try:
-            data = _parse_write_value(input("  Value (hex:.. / text:.. / auto): "))
-        except ValueError:
-            print("  Invalid hex value.")
-            return
-        result = char.write(data).wait(5, exception_on_timeout=False)
-        print(f"  Wrote {data.hex(' ')} ({len(data)} bytes)" if result else "  Write failed/timed out.")
-    elif action == "s":
-        if not char.subscribable:
-            print("  Not subscribable.")
-            return
+# --- GATT primitives reused by the interactive menu tree -------------------
 
-        def _on_notify(c, e):
-            print(f"    NOTIFY {c.uuid}: {_format_value(e.value)}")
+def connect_and_discover(ble_device, target_address):
+    """Connect and run service discovery; return the peer, or None on failure."""
+    print(f"Connecting to {target_address} ...")
+    peer = ble_device.connect(target_address).wait()
+    if not peer:
+        print("  Connection failed/timed out.")
+        return None
+    print("  Connected. Discovering services...")
+    peer.discover_services().wait(10, exception_on_timeout=False)
+    return peer
 
-        char.subscribe(_on_notify).wait(5, exception_on_timeout=False)
-        print("  Subscribed — listening 15s (Ctrl-C to stop)...")
-        try:
-            from blatann.waitables import GenericWaitable
-            GenericWaitable().wait(15, exception_on_timeout=False)
-        except KeyboardInterrupt:
-            pass
-        try:
-            char.unsubscribe()
-        except Exception:
-            pass
+
+def char_list(peer):
+    """Flat list of (service, characteristic) for the whole GATT database."""
+    return [(svc, ch) for svc in peer.database.services for ch in svc.characteristics]
+
+
+def char_label(svc, char, cached=None) -> str:
+    """One-line label for a characteristic (props, uuid, name, service, cached read)."""
+    cname = name_for_uuid(char.uuid)
+    sname = name_for_uuid(svc.uuid) or str(svc.uuid)
+    label = f"[{_props(char):5}] {char.uuid}" + (f" {cname}" if cname else "") + f"  (svc {sname})"
+    if cached:
+        label += f"  = {cached}"
+    return label
+
+
+def read_char(char):
+    """Read a characteristic; print and return the display string (or None)."""
+    if not char.readable:
+        print("  Not readable.")
+        return None
+    _, event_args = char.read().wait(5, exception_on_timeout=False)
+    if event_args is None:
+        print("  Read failed/timed out.")
+        return None
+    disp = _format_value(event_args.value)
+    interp = _interpret(char.uuid, event_args.value)
+    if interp:
+        disp += f"   → {interp}"
+    print(f"  Read: {disp}")
+    return disp
+
+
+def write_char(char):
+    """Prompt for a value and write it to the characteristic."""
+    if not (char.writable or char.writable_without_response):
+        print("  Not writable.")
+        return
+    try:
+        data = _parse_write_value(input("  Value (hex:.. / text:.. / auto): "))
+    except ValueError:
+        print("  Invalid hex value.")
+        return
+    result = char.write(data).wait(5, exception_on_timeout=False)
+    print(f"  Wrote {data.hex(' ')} ({len(data)} bytes)" if result else "  Write failed/timed out.")
+
+
+def subscribe_char(char, seconds=15):
+    """Subscribe and print notifications for a while, then unsubscribe."""
+    if not char.subscribable:
+        print("  Not subscribable.")
+        return
+
+    def _on_notify(c, e):
+        print(f"    NOTIFY {c.uuid}: {_format_value(e.value)}")
+
+    char.subscribe(_on_notify).wait(5, exception_on_timeout=False)
+    print(f"  Subscribed — listening {seconds}s (Ctrl-C to stop)...")
+    try:
+        from blatann.waitables import GenericWaitable
+        GenericWaitable().wait(seconds, exception_on_timeout=False)
+    except KeyboardInterrupt:
+        pass
+    try:
+        char.unsubscribe()
+    except Exception:
+        pass
 
 
 def capability_fingerprint(ble_device, target_address) -> None:
@@ -239,46 +272,6 @@ def capability_fingerprint(ble_device, target_address) -> None:
     print()
     print(capabilities.report(peer.database.services))
     peer.disconnect().wait()
-
-
-def interactive_gatt(ble_device, target_address) -> None:
-    """Connect to target_address and interactively browse/read/write its GATT."""
-    print(f"Connecting to {target_address} ...")
-    peer = ble_device.connect(target_address).wait()
-    if not peer:
-        print("  Connection failed/timed out.")
-        return
-    print("  Connected. Discovering services...")
-    peer.discover_services().wait(10, exception_on_timeout=False)
-
-    chars = [(svc, ch) for svc in peer.database.services for ch in svc.characteristics]
-    if not chars:
-        print("  No characteristics found.")
-        peer.disconnect().wait()
-        return
-
-    values: dict[int, str] = {}
-    try:
-        while True:
-            print("\nCharacteristics:")
-            last_svc = None
-            for i, (svc, ch) in enumerate(chars, 1):
-                if svc is not last_svc:
-                    sname = name_for_uuid(svc.uuid)
-                    print(f"  Service {svc.uuid} {sname}".rstrip())
-                    last_svc = svc
-                cname = name_for_uuid(ch.uuid)
-                label = f"{ch.uuid}" + (f" {cname}" if cname else "")
-                val = f"  = {values[i]}" if i in values else ""
-                print(f"    {i:2}) [{_props(ch):5}] {label}{val}")
-            sel = input("Select # (q = disconnect): ").strip().lower()
-            if sel in ("q", "quit"):
-                break
-            if sel.isdigit() and 1 <= int(sel) <= len(chars):
-                _char_action(chars[int(sel) - 1][1], values, int(sel))
-    finally:
-        print("Disconnecting.")
-        peer.disconnect().wait()
 
 
 def main(port, name, address, timeout, do_subscribe):

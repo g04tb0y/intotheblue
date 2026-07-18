@@ -43,6 +43,13 @@ menu. All tools autodetect the dongle's port from `/dev/serial/by-id` (fallback
 move the highlight with ↑/↓ (or `j`/`k`), press **Enter** on a device, and it
 becomes the target of a follow-up action. `Q` quits the scan without selecting.
 
+Selecting a device drops you into a **navigable menu tree** (`menu.py`): each choice
+either runs an action or descends into a sub-menu (e.g. Device → Browse GATT →
+characteristic → Read/Write/Subscribe), `b`/Enter goes **back up** one level, and a
+breadcrumb shows where you are. Depth is unlimited, so new capabilities just add
+nodes. Nodes can hold resources across the descent — the GATT node connects on entry
+and disconnects when you back out.
+
 - **BLE** → choose an action on the selected device:
   - **Fast Pair GATT exposure check (passive)** — a read-only attack-surface
     classification from the advertising already collected (Fast Pair `FE2C` GATT

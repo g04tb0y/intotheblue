@@ -52,3 +52,7 @@ detailed change history; this file holds rationale, plans, and open questions.
   `scan_classic.read_profiles`): parses SDP `UUID:` lines from `bluetoothctl info`
   into a profile checklist (A2DP/AVRCP/HFP/SPP/OBEX/PBAP/MAP/HID/PAN/SAP/DID).
   Detection-only. Parser validated against real soundbar output.
+- Reworked per-device interaction into a **navigable menu tree** (`menu.py`): stack of
+  `Menu` nodes, universal Back, breadcrumb, `on_enter`/`on_leave` (GATT node connects/
+  disconnects). GATT read/write/subscribe are now leaf nodes; replaced the bespoke
+  `interactive_gatt`/`_device_action`. Live-validated (read of Device Name via tree).

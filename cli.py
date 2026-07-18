@@ -11,9 +11,11 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import capabilities
 import client
 import exposure
 import livetable
+import menu
 import scan_classic
 import scan_live
 
@@ -38,20 +40,6 @@ def _prompt_int(message: str, default: int) -> int:
 
 
 # --- Activities -------------------------------------------------------------
-
-def _device_action(title, options, default) -> str:
-    """Render a one-action-per-line menu and return the chosen key.
-
-    options is a list of (key, label). To add an action, add one entry here and
-    one branch in the caller — keeps the growing menu readable.
-    """
-    print(title)
-    for key, label in options:
-        print(f"  {key}) {label}")
-    choice = _prompt("Action", default).strip().lower()
-    keys = {k for k, _ in options}
-    return choice if choice in keys else default
-
 
 def _scan_interact_loop(scanner, columns, title, interact_fn) -> None:
     """Live table loop: select a device -> act on it -> back to the same scan.
@@ -85,28 +73,89 @@ def activity_scan() -> None:
 
 
 def _interact_ble(scanner, rec) -> None:
-    """Act on a BLE device picked from the scan table (no MAC copy-paste)."""
-    print(f"\nSelected BLE device: {rec.address}  {rec.name or '(no name)'}"
-          f"  [{rec.protocol or rec.manufacturer or '-'}]")
-    action = _device_action("Actions:", [
-        ("f", "Fast Pair GATT exposure check (passive)"),
-        ("k", "Capability fingerprint (connect, detection-only)"),
-        ("c", "Connect & browse GATT (read/write/subscribe)"),
-        ("b", "Back"),
-    ], default="f")
-    if action == "f":
-        print()
-        print(exposure.report(rec))  # passive: reads collected advertising only
-    elif action in ("k", "c"):
+    """Enter the per-device menu tree for a BLE device picked from the scan."""
+    menu.run(_ble_device_menu(scanner, rec))
+
+
+def _leaf(fn):
+    """Wrap a print-only action so it runs and then stays on the current node."""
+    def action():
+        try:
+            fn()
+        except Exception as err:  # keep the tree alive on runtime/connection errors
+            print(f"  Error: {err}")
+        return None
+    return action
+
+
+def _ble_device_menu(scanner, rec):
+    title = f"BLE {rec.address} {rec.name or ''}".rstrip()
+
+    def build():
+        return [
+            ("f", "Fast Pair GATT exposure check (passive)",
+             _leaf(lambda: print("\n" + exposure.report(rec)))),
+            ("k", "Capability fingerprint (connect, detection-only)",
+             _leaf(lambda: client.capability_fingerprint(scanner.ble_device, rec.peer))),
+            ("g", "Browse GATT (connect)", lambda: _gatt_menu(scanner, rec)),
+        ]
+    return menu.Menu(title, build)
+
+
+def _gatt_menu(scanner, rec):
+    """GATT node: connects on enter, disconnects on leave, lists characteristics."""
+    state = {"peer": None, "values": {}}
+
+    def on_enter():
         if not rec.connectable:
             print("  Note: not advertised as connectable — the connection may fail.")
-        # Reuse the scanner's already-open dongle (avoids a close/reopen).
-        fn = client.capability_fingerprint if action == "k" else client.interactive_gatt
         try:
-            fn(scanner.ble_device, rec.peer)
-        except Exception as err:  # keep the CLI alive on connection errors
-            print(f"  Interaction error: {err}")
-    input("\nPress Enter to return to the scan...")
+            peer = client.connect_and_discover(scanner.ble_device, rec.peer)
+        except Exception as err:
+            print(f"  Connection error: {err}")
+            return False
+        if peer is None:
+            return False
+        state["peer"] = peer
+        return True
+
+    def on_leave():
+        if state["peer"]:
+            print("  Disconnecting.")
+            try:
+                state["peer"].disconnect().wait()
+            except Exception:
+                pass
+
+    def build():
+        items = []
+        for i, (svc, ch) in enumerate(client.char_list(state["peer"]), 1):
+            label = client.char_label(svc, ch, state["values"].get(i))
+            items.append((str(i), label, _char_menu_factory(ch, state["values"], i)))
+        return items
+
+    return menu.Menu("GATT", build, on_enter=on_enter, on_leave=on_leave)
+
+
+def _read_into(char, values, idx):
+    disp = client.read_char(char)
+    if disp is not None:
+        values[idx] = disp
+
+
+def _char_menu_factory(char, values, idx):
+    def open_char():
+        def build():
+            items = []
+            if char.readable:
+                items.append(("r", "Read", _leaf(lambda: _read_into(char, values, idx))))
+            if char.writable or char.writable_without_response:
+                items.append(("w", "Write", _leaf(lambda: client.write_char(char))))
+            if char.subscribable:
+                items.append(("s", "Subscribe (15s)", _leaf(lambda: client.subscribe_char(char))))
+            return items
+        return menu.Menu(f"Char {char.uuid}", build)
+    return open_char
 
 
 def activity_classic() -> None:
@@ -121,22 +170,26 @@ def activity_classic() -> None:
 
 
 def _interact_classic(scanner, rec) -> None:
-    """Act on a Classic device picked from the scan table."""
-    print(f"\nSelected Classic device: {rec.address}  {rec.name or '(no name)'}"
-          f"  [{rec.cod_label or '-'}]")
-    action = _device_action("Actions:", [
-        ("p", "Profile capability enumeration (SDP, detection-only)"),
-        ("i", "Show raw device details (bluetoothctl info)"),
-        ("b", "Back"),
-    ], default="p")
-    if action == "p":
-        import capabilities
-        uuid16s, vendor = scan_classic.read_profiles(rec.address)
-        print()
-        print(capabilities.classic_report(uuid16s, vendor))
-    elif action == "i":
-        subprocess.run(["bluetoothctl", "info", rec.address])
-    input("\nPress Enter to return to the scan...")
+    """Enter the per-device menu tree for a Classic device picked from the scan."""
+    menu.run(_classic_device_menu(rec))
+
+
+def _classic_profiles(rec):
+    uuid16s, vendor = scan_classic.read_profiles(rec.address)
+    print("\n" + capabilities.classic_report(uuid16s, vendor))
+
+
+def _classic_device_menu(rec):
+    title = f"Classic {rec.address} {rec.name or ''}".rstrip()
+
+    def build():
+        return [
+            ("p", "Profile capability enumeration (SDP, detection-only)",
+             _leaf(lambda: _classic_profiles(rec))),
+            ("i", "Show raw device details (bluetoothctl info)",
+             _leaf(lambda: subprocess.run(["bluetoothctl", "info", rec.address]))),
+        ]
+    return menu.Menu(title, build)
 
 
 # Activity registry: key -> (label, handler).
