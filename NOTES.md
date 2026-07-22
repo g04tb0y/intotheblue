@@ -5,9 +5,17 @@ detailed change history; this file holds rationale, plans, and open questions.
 
 ## TODO
 
-- [ ] Push pending local commits to `origin/devel` (branch is a few commits ahead).
 - [ ] Optional: make the `csv/` export order match the on-screen discovery order
       (currently CSV is sorted by RSSI).
+- [ ] Re-validate the SPP serial console end-to-end once the Jabra bond is restored
+      (they dropped the box's bond by reconnecting to a phone); last live run of the
+      full CLI path stopped at `br-connection-key-missing`.
+
+## Checkpoint
+
+- 2026-07-22: user-validated checkpoint ("per adesso sembra ok"). Interactive Classic
+  menu (Pair + navigable SDP profiles → SPP console / PBAP), plus the system-python
+  fix for the RFCOMM/D-Bus helpers. Committed and pushed to `origin/devel`.
 
 ## Design decisions
 
