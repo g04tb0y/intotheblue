@@ -66,3 +66,8 @@ There is **no automated test suite**. Verification is done by running against re
 - Reuse the shared abstractions rather than duplicating: new scan surfaces implement the `livetable` scanner interface; new per-device actions are an entry in the relevant `_device_action` list plus a branch in the `_interact_*` handler.
 - CSV output goes to `csv/` (git-ignored); logs and the venv are git-ignored too.
 - Commit messages in English. The working branch is `devel`; `main` is the base.
+
+## Rules of conduct
+
+- **Commit and push only when the user explicitly asks, after they have validated the change on real hardware.** A commit is a user-validated checkpoint, not "it passed my isolated tests". Do NOT commit proactively when a piece of work looks done, and do NOT repeatedly offer to push — finish, report, and leave changes in the working tree until told. (Committing unvalidated work causes "fare e rifare": e.g. the SPP console was committed as "validated" then broke in the real CLI, needing a fix commit.)
+- Chat with the maintainer in Italian; code and all on-screen/UI text in English (see also the Environment section).
