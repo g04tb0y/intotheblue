@@ -19,6 +19,28 @@ _ADDR_NOTES = {
 }
 
 
+def addr_note(kind: str) -> tuple[str, str]:
+    """(human label, trackability note) for an address kind, or a passthrough label."""
+    return _ADDR_NOTES.get(kind, (kind or "unknown", ""))
+
+
+def addr_kind(address: str, bluez_type: str) -> str:
+    """Map a BlueZ address ('public'/'random') to this module's address vocabulary.
+
+    BlueZ only reports public vs random; which *kind* of random it is comes from the
+    top two bits of the most significant address octet (Core spec, Vol 6 Part B 1.3.2):
+    0b11 static, 0b01 resolvable, 0b00 non-resolvable. Pure arithmetic on data already
+    collected — nothing is transmitted.
+    """
+    if bluez_type == "public":
+        return "pub"
+    try:
+        msb = int(address.split(":")[0], 16)
+    except (ValueError, IndexError):
+        return "?"
+    return {0b11: "rnd-s", 0b01: "rnd-r", 0b00: "rnd-n"}.get(msb >> 6, "rnd-?")
+
+
 def assess(rec) -> list[tuple[str, str, str]]:
     """Return a list of (label, value, note) passive exposure signals."""
     rows: list[tuple[str, str, str]] = []
@@ -35,13 +57,19 @@ def assess(rec) -> list[tuple[str, str, str]]:
                      "In the Fast Pair target class and in discoverable (pairing) mode."))
 
     # Address type — identity exposure / trackability
-    value, note = _ADDR_NOTES.get(rec.addr_type, (rec.addr_type or "unknown", ""))
+    value, note = addr_note(rec.addr_type)
     rows.append(("Address type", value, note))
 
-    # Connectable — prerequisite for any connection-based check
-    rows.append(("Connectable", "yes" if rec.connectable else "no",
-                 "Accepts connections." if rec.connectable
-                 else "Broadcast-only in the observed window."))
+    # Connectable — prerequisite for any connection-based check.
+    # None = the scan backend does not report it (BlueZ discovery); don't guess.
+    if rec.connectable is None:
+        rows.append(("Connectable", "unknown",
+                     "Not reported by this scan backend — the advertising PDU type is "
+                     "not surfaced by BlueZ discovery."))
+    else:
+        rows.append(("Connectable", "yes" if rec.connectable else "no",
+                     "Accepts connections." if rec.connectable
+                     else "Broadcast-only in the observed window."))
 
     # Context (identification only)
     if rec.name:

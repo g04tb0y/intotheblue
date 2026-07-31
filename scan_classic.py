@@ -30,7 +30,7 @@ _PROMPT = re.compile(r"^\[[^\]]*\][#>] ")
 # Matches a discovery event line after ANSI stripping (prompt prefix tolerated)
 _EVENT = re.compile(r"\[(NEW|CHG|DEL)\] Device ([0-9A-F:]{17})(?: (.*?))?\s*$")
 # Header of an `info <mac>` response block: "Device AA:BB:.. (public)"
-_INFO_HEADER = re.compile(r"Device ([0-9A-F:]{17}) \((?:public|random)\)")
+_INFO_HEADER = re.compile(r"Device ([0-9A-F:]{17}) \((public|random)\)")
 # A SIG SDP service UUID inside an `info` UUID line: 0000XXXX-0000-1000-8000-00805f9b34fb
 _SDP_UUID = re.compile(r"\(0000([0-9a-fA-F]{4})-0000-1000-8000-00805f9b34fb\)")
 
@@ -152,9 +152,19 @@ COLUMNS: list[livetable.Column] = [
 # --- Scan engine ------------------------------------------------------------
 
 class ClassicScanner:
-    """Drives `bluetoothctl` (BR/EDR discovery) and parses its event stream."""
+    """Drives `bluetoothctl` discovery and parses its event stream.
 
-    def __init__(self):
+    The parsing is transport-agnostic (the event stream is the same for BR/EDR and
+    LE), so `scan_le.LeScanner` subclasses this with `transport="le"` and its own
+    record class. Subclass hooks: `record_cls`, `_needs_info`, `_set_prop`,
+    `columns` / `csv_prefix` / the `_extra_csv_*` pair.
+    """
+
+    record_cls = ClassicRecord
+    csv_prefix = "classic"
+
+    def __init__(self, transport: str = "bredr"):
+        self._transport = transport
         self.devices: dict[str, ClassicRecord] = {}
         self._lock = threading.Lock()
         self._scanning = False
@@ -202,6 +212,8 @@ class ClassicScanner:
             hm = _INFO_HEADER.search(line)
             if hm:
                 self._info_target = hm.group(1)
+                # The address type is only stated in this header, never in the events.
+                self._apply_prop(hm.group(1), "AddressType", hm.group(2))
             elif not line:
                 self._info_target = None
 
@@ -209,7 +221,7 @@ class ClassicScanner:
         with self._lock:
             rec = self.devices.get(address)
             if rec is None:
-                rec = ClassicRecord(address=address)
+                rec = self.record_cls(address=address)
                 self.devices[address] = rec
             rec.last_seen = time.time()
             rec.count += 1
@@ -220,34 +232,25 @@ class ClassicScanner:
                 key, _, value = rest.partition(": ")
                 self._apply_prop(address, key, value, locked=True)
 
-            need_details = rec.cod is None and address not in self._info_requested
+            need_details = self._needs_info(rec) and address not in self._info_requested
 
-        # The Class of Device only comes via `info` (not the CHG stream), so pull
-        # the device details once. Done outside the lock to avoid holding it on I/O.
+        # Several properties (Class of Device, address type, SDP/GATT UUIDs) only come
+        # via `info`, not the CHG stream, so pull the device details once. Done outside
+        # the lock to avoid holding it on I/O.
         if need_details:
             self._info_requested.add(address)
             self._send(f"info {address}")
+
+    def _needs_info(self, rec) -> bool:
+        """Whether this record still needs an `info` query (once per address)."""
+        return rec.cod is None
 
     def _apply_prop(self, address: str, key: str, value: str, locked: bool = False) -> None:
         def _apply():
             rec = self.devices.get(address)
             if rec is None:
                 return
-            if key in ("Name", "Alias") and value and value != address.replace(":", "-"):
-                if key == "Name" or not rec.name:
-                    rec.name = value
-            elif key == "RSSI":
-                r = _parse_rssi(value)
-                if r is not None:
-                    rec.rssi = r
-            elif key == "Class":
-                try:
-                    rec.cod = int(value.split()[0], 16)
-                    rec.cod_label = decode_cod(rec.cod)
-                except ValueError:
-                    pass
-            elif key == "Icon":
-                rec.icon = value
+            self._set_prop(rec, key, value)
             rec.last_seen = time.time()
 
         if locked:
@@ -256,13 +259,46 @@ class ClassicScanner:
             with self._lock:
                 _apply()
 
+    def _set_prop(self, rec, key: str, value: str) -> None:
+        """Apply one `key: value` property to a record. Called under the lock.
+
+        Subclasses override this to handle their own keys and delegate the rest here.
+        """
+        if key in ("Name", "Alias") and value and value != rec.address.replace(":", "-"):
+            if key == "Name" or not rec.name:
+                rec.name = value
+        elif key == "RSSI":
+            r = _parse_rssi(value)
+            if r is not None:
+                rec.rssi = r
+        elif key == "Class":
+            try:
+                rec.cod = int(value.split()[0], 16)
+                rec.cod_label = decode_cod(rec.cod)
+            except ValueError:
+                pass
+        elif key == "Icon":
+            rec.icon = value
+
     def pause(self) -> None:
         self._scanning = False
         self._send("scan off")
 
+    def release_agent(self) -> None:
+        """Drop this session's pairing agent.
+
+        `bluetoothctl` registers one on startup and claims the *default* agent, and
+        BlueZ allows only one: another client (e.g. `identity.extract`, which needs a
+        NoInputNoOutput agent) cannot become default until we let go.
+        """
+        self._send("agent off")
+
+    def restore_agent(self) -> None:
+        self._send("agent on")
+
     def resume(self) -> None:
         self._scanning = True
-        self._send("scan bredr")
+        self._send(f"scan {self._transport}")
 
     @property
     def is_scanning(self) -> bool:
@@ -281,18 +317,27 @@ class ClassicScanner:
             except subprocess.TimeoutExpired:
                 self._proc.terminate()
 
+    @property
+    def columns(self) -> list[livetable.Column]:
+        return COLUMNS
+
+    def _extra_csv_headers(self) -> list[str]:
+        return ["CoD", "FirstSeen"]
+
+    def _extra_csv_row(self, d) -> list[str]:
+        return [f"0x{d.cod:06X}" if d.cod is not None else "",
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d.first_seen))]
+
     def save_csv(self) -> str:
         os.makedirs("csv", exist_ok=True)
-        path = f"csv/classic_{int(time.time())}.csv"
-        headers = [h for h, _, _ in COLUMNS] + ["CoD", "FirstSeen"]
+        path = f"csv/{self.csv_prefix}_{int(time.time())}.csv"
+        columns = self.columns
+        headers = [h for h, _, _ in columns] + self._extra_csv_headers()
         with self._lock, open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
             for d in sorted(self.devices.values(), key=lambda r: r.rssi, reverse=True):
-                row = [func(d) for _, _, func in COLUMNS]
-                row.append(f"0x{d.cod:06X}" if d.cod is not None else "")
-                row.append(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d.first_seen)))
-                writer.writerow(row)
+                writer.writerow([func(d) for _, _, func in columns] + self._extra_csv_row(d))
         return path
 
 

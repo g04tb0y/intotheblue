@@ -58,7 +58,12 @@ def _draw(stdscr, records, scanner, columns, title, selected, last_saved) -> Non
     status = f" {title} · {state} · {len(records)} devices"
     if last_saved:
         status += f" · saved: {last_saved}"
-    commands = "  ↑↓ select   ⏎ interact   ^P pause/resume   ^S save CSV   Q quit "
+    commands = "  ↑↓ select   ⏎ interact   ^P pause/resume   ^S save CSV"
+    # Scanners may expose an optional row filter (see scan_fused.FusedScanner).
+    hint = getattr(scanner, "filter_hint", None)
+    if hint:
+        commands += f"   {hint}"
+    commands += "   Q quit "
 
     stdscr.addnstr(height - 2, 0, status.ljust(width - 1), width - 1, curses.A_REVERSE)
     stdscr.addnstr(height - 1, 0, commands.ljust(width - 1), width - 1, curses.A_BOLD)
@@ -96,6 +101,11 @@ def _ui(stdscr, scanner, columns: list[Column], title: str):
             scanner.resume() if not scanner.is_scanning else scanner.pause()
         elif ch == 19:  # Ctrl+S
             last_saved = scanner.save_csv()
+        elif ch in (ord("v"), ord("V")):
+            toggle = getattr(scanner, "toggle_filter", None)
+            if toggle:
+                toggle()
+                selected = 0
 
 
 def run(scanner, columns: list[Column], title: str):

@@ -89,6 +89,12 @@ and disconnects when you back out.
       `pbap_pull.py`).
     - other profiles → a description.
   - **Show raw details** (`bluetoothctl info`). Signatures live in `capabilities.py`.
+- **BLE via host adapter (BlueZ)** device menu — see *Live BLE scan via the host
+  adapter* below:
+  - **Identity address disclosure (active)** — tests whether a device advertising a
+    Resolvable Private Address really keeps its permanent BDADDR private.
+  - **Exposure check (passive)** — the same read-only classification as the BLE menu.
+  - **Show raw details** (`bluetoothctl info`).
 
 The dongle stays open across the interaction: scanning is paused while you act on a
 device, then resumes — so after disconnecting you're back in the same scan.
@@ -131,6 +137,89 @@ into a readable label (e.g. `Audio/Video · Loudspeaker` for a JBL Go 3); the ta
 also shows Name, Icon and RSSI. Note: a Classic device only answers an inquiry while
 it is **discoverable** (pairing mode) — one already connected or idle will not appear.
 
+### Live BLE scan via the host adapter (BlueZ), and the fused scan
+The LE twin of the Classic scan: same live table, same `hci0` prerequisites, but
+`bluetoothctl scan le`. It does **not** replace the dongle scan — it exists because
+host-side actions (below) only work on devices present in **BlueZ's own** device
+cache, and a device seen by the dongle is invisible to BlueZ.
+
+```bash
+sudo systemctl start bluetooth
+sudo hciconfig hci0 up
+.venv310/bin/python scan_le.py       # BlueZ only
+.venv310/bin/python scan_fused.py    # both radios at once (what the CLI uses)
+```
+
+**The fused scan (`scan_fused.py`) is the one to use**, and is what CLI activity 3
+runs. Both radios see the same advertising packets at the same instant, so they
+report the same address — including a rotating private one — and can be merged by
+address. That matters because the two backends know different halves of what you
+need: only the **dongle** reports the advertising PDU type (`Conn`), which decides
+whether a connection-based check can reach the target at all; only **BlueZ** can act
+on it. Triaging in one table and acting from the other let the private address rotate
+in between, so the verdict no longer applied to the device you touched.
+
+The fused table therefore carries a real **`Conn`** column plus the dongle's richer
+`Type`/Fast Pair decoding, and a **`Target`** column holding two independent signals:
+
+- **`FP`** — the device advertises Google Fast Pair (`0xFE2C`), which it only does
+  **while in pairing mode**. That is the operational target signal: someone has to put
+  the device in that state deliberately, which is also what lets you attribute it — by
+  *name*, since a rotating private address can never be tied to an owner by looking at
+  it.
+- **`RPA`** — `rnd-r` **and** connectable: the precondition of the *mechanism*, i.e.
+  there is a private address to unmask and a link on which to do it.
+
+`FP+RPA` is the ready-to-run case. Press **`V`** to hide rows carrying neither signal.
+Keeping them apart is deliberate: *reachable* and *yours to test* are different
+questions, and one "viable" flag used to conflate them. The dongle is optional: without
+it `Conn` reads `?`, no row can show `RPA`, and the table degrades to the BlueZ-only
+view.
+
+Columns: address, **Addr** kind, name, RSSI, Fast Pair, Manufacturer, bond state and
+number of known services. BlueZ reports only *public* vs *random*, so `rnd-s` /
+`rnd-r` / `rnd-n` are derived from the address bits (`exposure.addr_kind`). It gives
+less advertising detail than the dongle scan (no PDU type, so **connectable** is
+reported as *unknown* rather than guessed) — use the dongle scan for identification
+depth, this one for host-side interaction.
+
+**Identity address disclosure (`identity.py`)** — the per-device active action. A
+device advertising an RPA should keep its permanent Identity Address secret from
+anyone without its IRK; this check tests that.
+
+It opens a plain BLE connection and then looks for a *second* address appearing in
+BlueZ's device table under the target's name. **The connection is where the disclosure
+happens**: the host resolves the peer's private address and caches its identity address
+while processing connection completion, at HCI level, below SMP and GATT. Only if that
+produced nothing attributable — typically an RPA advertising no name — does the check
+register a `NoInputNoOutput` (Just Works) agent and attempt a **pairing**, where a new
+*bond* is the remaining way to tie an address to the peer just contacted. When the
+connection alone answers, no pairing is attempted and nothing is left on the target.
+
+**No GATT characteristic is written**, and the Fast Pair service check is advisory and
+never gates the flow — which is the point: the disclosure happens in the *host's* device
+table, outside the accessory's application layer, so an accessory patched against
+CVE-2025-36911 is not protected by that fix here.
+
+Guard-rails, because this one transmits. Three preconditions are refused **without
+sending anything**, so a pointless target costs nothing instead of a minute:
+- **public** — the identity address is already in the clear;
+- **random static** — a permanent identity address in its own right, not a privacy
+  feature, so there is nothing to unmask (the check only makes sense against a
+  *resolvable* `rnd-r` address);
+- **non-connectable** — known from the fused table's `Conn`: no LE link means no SMP
+  and nothing to distribute, whatever the check does;
+- candidates must be attributable to the target (its name, or a `Paired`/`Bonded`
+  line) — unrelated devices discovered meanwhile are counted as ambient noise,
+  reported, and never touched;
+- a row that is `RPA` **without** `FP` is reachable but of **unverified ownership** —
+  a rotating address identifies nobody, so in a non-isolated environment such a row is
+  most likely a stranger's phone or watch. The menu says so before you act. Only run
+  this against a device you put in pairing mode yourself;
+- host-side traces are cleaned up automatically (`remove`), and only entries this run
+  introduced are ever removed. A bond may remain **on the target device** and must be
+  cleared there by hand; the report says so.
+
 ### Batch scan (scriptable)
 Non-interactive scan for a fixed duration, exports to `csv/output_<epoch>.csv`.
 
@@ -164,6 +253,9 @@ To verify it: connect from your phone with the **nRF Connect** app, or with
 cli.py          interactive menu (entry point)
 scan_live.py    live BLE scan: full-screen table + CSV
 scan_classic.py live Bluetooth Classic (BR/EDR) scan via host adapter + CSV
+scan_le.py      live BLE scan via host adapter (BlueZ), subclasses the Classic scanner
+scan_fused.py   both BLE radios at once, merged by address (dongle Conn + BlueZ action)
+identity.py     active identity-address (BDADDR) disclosure check, host-side
 livetable.py    shared full-screen curses live-table UI
 scan.py         batch BLE scan -> CSV
 client.py       central: connect + GATT exploration

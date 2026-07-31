@@ -14,9 +14,12 @@ import sys
 import capabilities
 import client
 import exposure
+import identity
 import livetable
 import menu
 import scan_classic
+import scan_fused
+import scan_le
 import scan_live
 
 
@@ -323,11 +326,80 @@ def _pbap_menu(rec):
     return menu.Menu(f"PBAP {rec.address}", build)
 
 
+def activity_le_bluez() -> None:
+    """Live BLE scan fusing both radios — the dongle decides, BlueZ acts."""
+    print()
+    scanner = scan_fused.FusedScanner()
+    scanner.open()
+    if not scanner.dongle_ok:
+        print(f"  Dongle unavailable ({scanner.dongle_error}) — continuing on BlueZ only;\n"
+              f"  the Conn column will read '?' and targets cannot be pre-screened.")
+    scanner.start()
+    try:
+        _scan_interact_loop(scanner, scan_fused.COLUMNS, "BLE fused", _interact_le_bluez)
+    finally:
+        scanner.close()
+
+
+def _interact_le_bluez(scanner, rec) -> None:
+    menu.run(_le_bluez_device_menu(scanner, rec))
+
+
+def _le_bluez_device_menu(scanner, rec):
+    title = f"BLE {rec.address} {rec.name or ''}".rstrip()
+    # Two independent facts, so the label never overstates: Fast Pair advertising means
+    # the device is in pairing mode (a target you can attribute by name and were meant
+    # to act on), a resolvable address means the mechanism has something to unmask.
+    note = scan_fused.target_note(rec)
+    label = {
+        "FP+RPA": "Identity address disclosure (active: connect) — READY: Fast Pair + RPA",
+        "FP": "Identity address disclosure (active: connect) — Fast Pair, but no RPA to unmask",
+        "RPA": "Identity address disclosure (active: connect) — RPA reachable, ownership UNVERIFIED",
+    }.get(note, "Identity address disclosure (active) — not a target, will explain")
+
+    def build():
+        return [
+            ("i", label, _leaf(lambda: _run_identity(scanner, rec))),
+            ("f", "Exposure check (passive)",
+             _leaf(lambda: print("\n" + exposure.report(rec)))),
+            ("n", "Show raw device details (bluetoothctl info)",
+             _leaf(lambda: subprocess.run(["bluetoothctl", "info", rec.address]))),
+        ]
+    return menu.Menu(title, build)
+
+
+def _run_identity(scanner, rec) -> None:
+    """Run the active identity-address disclosure check on the selected device.
+
+    No extra confirmation: choosing this entry is the explicit action, and the private
+    address rotates while you answer prompts. The check itself refuses, without
+    transmitting, any target it can already tell is pointless.
+    """
+    print("\n  ACTIVE: opens an LE connection. The disclosure, if any, happens there —"
+          "\n  a Just Works pairing is attempted only as a fallback. No GATT write.")
+    if not scan_fused.is_fast_pair(rec):
+        # Still no prompt: the menu entry is the explicit action and an RPA rotates
+        # while you answer. But an RPA cannot be attributed to an owner by looking at
+        # it, so say plainly that this one is unattributed.
+        print("  NOTE: this device is not advertising Fast Pair, so nothing here proves"
+              "\n  whose it is. Only act on a device you put in pairing mode yourself.")
+    # BlueZ allows a single default agent: hand it over to the check's own session.
+    scanner.release_agent()
+    try:
+        print("  Running — this takes up to a minute...", flush=True)
+        print("\n" + identity.extract(rec.address, rec.addr_type, rec.name,
+                                      connectable=rec.connectable))
+    finally:
+        scanner.restore_agent()
+
+
 # Activity registry: key -> (label, handler).
 # To add one: define the handler and register it here.
 ACTIVITIES: dict[str, tuple[str, callable]] = {
-    "scan": ("Live BLE scan (table + CSV)", activity_scan),
-    "classic": ("Live Bluetooth Classic scan (BR/EDR)", activity_classic),
+    "scan": ("Live BLE scan — nRF52 dongle (table + CSV)", activity_scan),
+    "classic": ("Live Bluetooth Classic scan (BR/EDR) — host adapter", activity_classic),
+    "le_bluez": ("Live BLE scan — fused dongle+BlueZ (identity disclosure)",
+                 activity_le_bluez),
 }
 
 
