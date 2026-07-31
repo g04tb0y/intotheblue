@@ -3,14 +3,18 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
-## Resume here — 2026-07-31, fused `Conn` validated live; still no viable target
+## Resume here — 2026-07-31, recon stage realigned and committed; disclosure untested
 
-**Committed on `devel` (not pushed) at the maintainer's explicit request, ahead of the
-usual rule** — new: `identity.py`, `scan_le.py`, `scan_fused.py`; modified: `cli.py`,
-`exposure.py`, `scan_classic.py`, `livetable.py`, `README.md`, this file. It is a
-save-point, **not a validated checkpoint**: the scan half is proven live, the disclosure
-the check exists for has never run against a real target ("poi la testeremo"). Do not
-list it under *Checkpoint* until it has.
+*Short version: the scan side is done and pushed (`72b680b` on `origin/devel`). What is
+left needs a Fast Pair accessory in pairing mode — see **Test plan** below, which is
+written to be run cold.*
+
+**Committed and pushed** as `72b680b` on `origin/devel`, at the maintainer's explicit
+request and ahead of the usual rule — new: `identity.py`, `scan_le.py`, `scan_fused.py`;
+modified: `cli.py`, `exposure.py`, `scan_classic.py`, `livetable.py`, `README.md`, this
+file. It is a save-point, **not a validated checkpoint**: the scan half is proven live,
+the disclosure the check exists for has never run against a real target ("poi la
+testeremo"). Do not list it under *Checkpoint* until it has.
 
 **The USB fault is cleared.** After rebooting host and guest, the dongle opens normally
 (`open_device` → ok) and `hci0` comes up; no `xhci ... not part of TD` in `dmesg`. See
@@ -46,14 +50,57 @@ not a decoding bug — the doubt that could not be settled by scanning harder. T
 harness is `fp_advertiser.py` in the scratchpad (not committed, per CLAUDE.md); it is
 ~60 lines over `blatann` and worth recreating rather than remembering.
 
-**Next, in order:**
-1. Run `i` against a real Fast Pair accessory in pairing mode and check whether the
-   **connection alone** discloses — the claim the rework is built on, still unverified.
-   The emulated beacon cannot stand in for this: it has no identity address to leak (it
-   advertises the dongle's own static address and runs no SMP), so it validates the
-   *scan* half only.
-2. Needs an accessory to be bought: Galaxy Buds+ are ruled out (see *Findings*), and a
-   phone in "pair new device" is a Fast Pair **seeker**, not an advertiser.
+## Test plan — validating the disclosure (waiting on hardware)
+
+The one claim the whole rework rests on is **unverified**: that the *connection alone*
+discloses the identity address, before any pairing. Everything else is proven. This plan
+is written to be runnable without re-deriving the reasoning — the session it came from
+is gone.
+
+**Hardware.** Ordered / to obtain: **Redmi Buds 6 Play** (~15-20 €). Google Fast Pair is
+declared on Xiaomi's official spec page ("Quick pairing with Android devices by simply
+opening the case", Google Play services 11.7+, Android 6.0+). Any Fast Pair accessory
+does; a phone in "pair new device" does **not** — it is a Fast Pair *seeker*, not an
+advertiser. Galaxy Buds+ are ruled out (see *Findings*).
+
+**Entering pairing mode.** Opening the lid is enough while the buds are still unpaired.
+Once they have been paired to something, the way back in is: buds in the case, lid open,
+**hold the case button until the LED blinks rapidly**. (This is the step that never took
+on the Buds+, which is why it is written down.)
+
+**Run it in this order:**
+1. **Before pairing them to anything.** Fresh out of the box they sit in pairing mode on
+   their own — the easiest possible conditions, and they only happen once.
+2. CLI activity 3 (fused scan). Keep the scan **short** (20-30 s) and the buds **a few
+   cm from the box**: the record must be fresh (an RPA rotates) and strong (fusion drops
+   `Conn` below ≈ −94 dBm, see *Findings*).
+3. Read the `Target` column, then act on what it says:
+   - **`FP+RPA`** → the ready case. Select the row, `i`, and answer the actual question:
+     does the report say *"disclosed ... as soon as the LE connection completed"*
+     (`skipped_pairing`, connect-only footer), or did it need the pairing fallback?
+     Record which, verbatim.
+   - **`FP` only** (Fast Pair but a static address) → *also a result, not a failure*.
+     It would mean even a current Fast Pair accessory advertises no resolvable private
+     address, and the technique's real target is narrower than Whisper_Bully's README
+     implies. Write it in *Findings* with the address kind observed.
+   - **nothing** → suspect our decoding, not the environment, and use the cross-check
+     below before touching the code.
+4. **Cross-check with the phone.** An Android phone (the OnePlus Nord) pops up the Fast
+   Pair dialog for an accessory in pairing mode it has never been paired with. If the
+   popup appears and our `Target` column stays empty, the defect is ours. Caveat that
+   invalidated this test once already: the popup is **suppressed for a device already
+   paired to that phone**, and needs Bluetooth + location + nearby-device scanning on.
+
+**Harnesses to recreate** (scratchpad, never committed — per CLAUDE.md):
+- `fp_advertiser.py` — ~60 lines over `blatann`: makes the dongle transmit `0xFE2C` +
+  a 3-byte Model ID, connectable, so the scan side can be tested with no accessory at
+  all. `service_uuid16s` wants `Uuid16` objects, `service_data` raw bytes. **Read it
+  back with `scan_le.LeScanner` directly, never through the fused scanner** — the fused
+  scanner tries to open the busy dongle and that attempt resets it, killing the
+  advertising for reasons that look like a decoding bug.
+- `drive_fused.py` / `drive_identity.py` — drive `cli.py` through a `pty` (activity 3 →
+  `^S` save CSV → `V` filter → row select → `i`). Assert on the **CSV**, not on the
+  scraped curses frame.
 
 **Verification harnesses** are not committed (per CLAUDE.md) and live in the session
 scratchpad. Recreate as needed: one drives `cli.py` through a `pty` (main menu →
@@ -70,14 +117,10 @@ viability, filter, CSV and the three passive refusals without any hardware.
 - [ ] Re-validate the SPP serial console end-to-end once the Jabra bond is restored
       (they dropped the box's bond by reconnecting to a phone); last live run of the
       full CLI path stopped at `br-connection-key-missing`.
-- [ ] **Validate `identity.extract` against a real RPA target** (authorized device).
-      Plumbing, ambient filter, cleanup **and now the full live active path** are proven;
-      the *disclosure* path is not. First live run (2026-07-31) reached a genuinely viable
-      target and failed correctly on a rotated address — the report diagnosed it. What is
-      still missing is a run where the target is **still on the air** at connect time
-      **and** provably the authorised device: short scan, device at a few cm, select by
-      RSSI (see *Findings*). Fast Pair earbuds / tracker / wearable; Galaxy Buds+ are
-      ruled out and phones are out of scope, see the findings below.
+- [ ] **Validate `identity.extract` against a real Fast Pair target** — the one open
+      item, blocked on hardware. Full procedure in **Test plan** above; do not re-derive
+      it. Plumbing, ambient filter, cleanup, the full live active path and the scan-side
+      Fast Pair decoding are all proven — only the disclosure itself is not.
 - [x] ~~**See the fused table with real `Conn` values**~~ — done 2026-07-31, first
       real-hardware run: 5 `YES` / 4 `no` / 3 `?` over 12 devices. See *Resume here*.
 - [x] ~~**Find out whether a viable target exists at all in this environment**~~ —
