@@ -3,6 +3,42 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-08-28, disclosure validated against a real Fast Pair target: NEGATIVE
+
+*Executed the full test plan against a real **Redmi Buds 6 Play** (see the standalone
+`docs/test-plan-redmi-buds-6.md` for the run and evidence). The one claim the whole
+2026-07-31 rework rested on did **not** reproduce.*
+
+**Result.** On the Redmi Buds 6 Play the identity-address disclosure does not happen:
+the host opens an unauthenticated LE connection and reads full GATT (name
+"Redmi Buds 6 Play", FE2C KBP chars `fe2c1233`…`1237`), but a plain Just Works bond
+is **refused** (`org.bluez.Error.AuthenticationCanceled`) and **no permanent identity
+address ever enters the BlueZ device table** — tested virgin (pairing mode) and
+phone-bonded (reconnect RPA). `intotheblue`'s `identity.extract` and the reference
+tool **Whisper_Bully** (`wb.py`, with `sudo` + `bleak`) fail **identically**
+(`Failed to extract`), so this is a device/mechanism property, **not an intotheblue
+bug** — `identity.extract` reported the truthful "No disclosure observed".
+
+**Why (and a correction to the assumption below).** Resolving an RPA needs the peer's
+IRK, which the host gets only when an SMP bond **completes**. This host never bonded
+the buds → no IRK → it cannot resolve the RPA on connection, exactly as BLE privacy
+prescribes. So the 2026-07-31 framing — "the disclosure happens at connection
+completion, before any SMP; pairing is a fallback" — is a reading of Whisper_Bully's
+README that **does not hold empirically** on this device (WB's README claims Stage-1
+resolution at `LL_CONNECTION_COMPLETE` even on patched devices; it did not reproduce,
+and WB itself failed to extract). The device being bonded to a *phone* does not help:
+the phone holds the IRK, not our host.
+
+**Consequence for the checkpoint.** `72b680b` is **not** promoted to a validated
+"disclosure works" checkpoint. The recon/scan half remains proven; the disclosure it
+exists to demonstrate does not reproduce on a current Fast Pair accessory.
+
+**Caveat / next.** One device, no *known-vulnerable* positive control — so we can't
+fully separate "device not vulnerable" from "this BlueZ version doesn't exhibit the
+leak at all". The identical failure of both tools does rule out an intotheblue defect.
+Getting an older/unpatched accessory that accepts a raw Just Works bond is the next
+step to turn that caveat into a measured result.
+
 ## Resume here — 2026-07-31, recon stage realigned and committed; disclosure untested
 
 *Short version: the scan side is done and pushed (`72b680b` on `origin/devel`). What is
@@ -50,7 +86,7 @@ not a decoding bug — the doubt that could not be settled by scanning harder. T
 harness is `fp_advertiser.py` in the scratchpad (not committed, per CLAUDE.md); it is
 ~60 lines over `blatann` and worth recreating rather than remembering.
 
-## Test plan — validating the disclosure (waiting on hardware)
+## Test plan — validating the disclosure (EXECUTED 2026-08-28 → `docs/test-plan-redmi-buds-6.md`, result NEGATIVE; kept for the cold-run procedure)
 
 The one claim the whole rework rests on is **unverified**: that the *connection alone*
 discloses the identity address, before any pairing. Everything else is proven. This plan
@@ -117,10 +153,22 @@ viability, filter, CSV and the three passive refusals without any hardware.
 - [ ] Re-validate the SPP serial console end-to-end once the Jabra bond is restored
       (they dropped the box's bond by reconnecting to a phone); last live run of the
       full CLI path stopped at `br-connection-key-missing`.
-- [ ] **Validate `identity.extract` against a real Fast Pair target** — the one open
-      item, blocked on hardware. Full procedure in **Test plan** above; do not re-derive
-      it. Plumbing, ambient filter, cleanup, the full live active path and the scan-side
-      Fast Pair decoding are all proven — only the disclosure itself is not.
+- [x] ~~**Validate `identity.extract` against a real Fast Pair target**~~ — done
+      2026-08-28 against a Redmi Buds 6 Play, **result NEGATIVE**: the disclosure does
+      not reproduce (bond refused `AuthenticationCanceled`, no identity address in the
+      table), and Whisper_Bully fails identically → not an intotheblue bug. Full run and
+      the mechanism analysis in `docs/test-plan-redmi-buds-6.md` and *Resume here* above.
+      Follow-up TODO added below: obtain a known-vulnerable target as a positive control.
+- [ ] **Obtain a known-vulnerable Fast Pair accessory as a positive control** — one
+      that accepts a raw Just Works bond — to confirm the disclosure path can work at all
+      in this environment/BlueZ version, separating "device not vulnerable" from "this
+      stack doesn't exhibit the leak". Without it the negative above has an untestable
+      caveat (see *Resume here*, Caveat).
+- [ ] **Fused Model-ID masking** (`scan_fused.snapshot`) — BlueZ's bare `fast_pair="Yes"`
+      wins the `or` over the dongle's decoded Model ID, so the fused table and the passive
+      exposure verdict understate a discoverable target (seen live 2026-08-28: buds in
+      discoverable pairing mode reported "non-discoverable / medium"). Prefer the dongle's
+      Model ID when present.
 - [x] ~~**See the fused table with real `Conn` values**~~ — done 2026-07-31, first
       real-hardware run: 5 `YES` / 4 `no` / 3 `?` over 12 devices. See *Resume here*.
 - [x] ~~**Find out whether a viable target exists at all in this environment**~~ —
@@ -201,6 +249,23 @@ viability, filter, CSV and the three passive refusals without any hardware.
 - **English for code and all UI text.**
 
 ## Findings
+
+- **The identity disclosure does not reproduce on a real Fast Pair target, and the
+  reference tool fails the same way** (2026-08-28, Redmi Buds 6 Play; full run in
+  `docs/test-plan-redmi-buds-6.md`). The host opens an unauthenticated LE connection
+  and reads full GATT, but the Just Works bond is refused
+  (`org.bluez.Error.AuthenticationCanceled`) and no permanent identity address enters
+  the BlueZ table — virgin *and* phone-bonded. `Whisper_Bully` (`sudo` + `bleak`) fails
+  identically (`Failed to extract`). Root cause: resolving an RPA needs the peer's IRK,
+  distributed only on a **completed** bond; a host that has never bonded the peer has no
+  IRK and cannot resolve the RPA at connection — so WB's README claim of resolution at
+  `LL_CONNECTION_COMPLETE` (before SMP, even on patched devices) is empirically wrong
+  here. Two operational lessons: (1) `identity.extract`'s name-based attribution is blind
+  when the connection doesn't resolve a name (the reconnect RPA advertises none), so a
+  leak that surfaced only as an unnamed table entry would be missed — a manual
+  device-table check (as WB does) is the backstop; (2) the whole 2026-07-31 "prefer
+  connect-only" rework was built on a misread of WB's mechanism — WB depends on the bond
+  (or on the host already holding the IRK), it does not disclose from a bare connection.
 
 - **Emulate the target to test the observer** (2026-07-31). The fastest way to prove a
   *scan-side* decoding path is to make the dongle transmit the advertisement we claim to
@@ -319,6 +384,15 @@ viability, filter, CSV and the three passive refusals without any hardware.
   whether a target is reachable at all; the BlueZ scan is where the host-side action
   runs. That is worth keeping in mind before blaming the check for a silent failure.
 
+## Goals (standing)
+
+- **Identify as many paired Bluetooth devices as possible** (stated 2026-08-28). The
+  negative identity-disclosure result on the Redmi Buds 6 Play retires neither the goal
+  nor the direction: attributing devices and their pairing relationships stays a core
+  recon objective. The connection-based RPA unmask is *one* avenue that did not work on
+  a current accessory — pursue the goal by whatever fits scan/select/act (advertising,
+  GATT, Classic SDP/CoD, proximity, and a future known-vulnerable positive control).
+
 ## Open questions — to study / evaluate
 
 - **OUI vendor lookup** for public (non-random) addresses — would identify the vendor
@@ -333,6 +407,22 @@ viability, filter, CSV and the three passive refusals without any hardware.
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **Configured the `mattpocock-skills` engineering skills for this repo** (2026-08-02),
+  via their `setup-matt-pocock-skills` scaffolder. Three config files under
+  `docs/agents/` plus an `## Agent skills` section in `CLAUDE.md` that points at them.
+  Choices made, with the reasoning: **issue tracker = local markdown** under
+  `.scratch/<feature>/` rather than GitHub Issues — the project is single-maintainer and
+  the repo already keeps its planning in-tree (`NOTES.md`), so issues stay next to the
+  code and get versioned with it, and `.scratch/` was deliberately left **out** of
+  `.gitignore` for that reason. **Triage labels = the five canonical roles verbatim** —
+  no pre-existing label vocabulary to map onto. **Domain docs = single-context** —
+  one package, no monorepo signals; `CONTEXT.md` and `docs/adr/` are not created now,
+  `/domain-modeling` creates them lazily when a term or decision actually needs pinning.
+  Nothing here changes runtime code or the scan/select/act model; it only tells those
+  skills where to read and write. Note the overlap to watch: `NOTES.md` stays the
+  project's working memory (rationale, TODO, findings) — `.scratch/` is for per-feature
+  specs and tickets, not a second scratchpad.
 
 - **Realigned the recon stage with `/opt/repo/Whisper_Bully`** (2026-07-31). The goal for
   phase 1 of this project is to reproduce every recon / enumeration / fingerprinting
