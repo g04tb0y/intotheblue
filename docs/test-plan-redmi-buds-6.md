@@ -91,14 +91,33 @@ RPA to the identity address at `LL_CONNECTION_COMPLETE`, before any GATT, works 
 fully patched devices"). That claim did not reproduce here, and WB itself failed to
 extract — consistent with the theory above.
 
+## Positive control — pipeline validated (2026-08-28)
+
+The obvious caveat was "no known-vulnerable device, so is the pipeline even capable of
+disclosing?". Resolved with an **in-house** positive control instead of a purchase:
+`emulate.py --positive-control` makes the nRF52 dongle advertise a Resolvable Private
+Address and accept an unauthenticated Just Works bond, distributing its IRK + identity
+(blatann 0.6.0: `set_privacy_settings(resolvable_address=True)` +
+`set_security_params(bond=True, io_capabilities=NONE)`; the peripheral always sets
+`kdist_own.id_key`). The two BLE radios are independent, so the dongle is the peripheral
+and the host adapter the central on one machine — no phone required.
+
+`identity.extract` against the emulated RPA (`42:3A:1F:98:F3:D3`, name "PosCtrlBuds"):
+
+    Pairing attempt   paired
+    Bond              target reported Bonded: yes
+    Verdict           IDENTITY ADDRESS DISCLOSED — CE:C1:1B:51:DD:23 (random static)
+
+That is the dongle's real identity address, correctly attributed (new bond + name). So
+`intotheblue`'s check and the whole disclosure pipeline are **proven correct in this
+environment** — which upgrades the Redmi result: its negative is a genuine **device
+property** (it refuses the bond), not a tooling/stack defect.
+
 ## Caveats / open
 
-- **One device.** We do not have a *known-vulnerable* Fast Pair target to run as a
-  positive control, so we cannot fully separate "this device is not vulnerable" from
-  "this BlueZ version does not exhibit the leak at all". The identical failure of
-  both tools does, however, rule out an `intotheblue`-specific defect.
-- Whether older / unpatched accessories that accept a raw Just Works bond would
-  disclose the identity here remains untested.
+- **Real-world confirmation (optional).** The in-house control validates the pipeline;
+  confirming on a real Fast Pair accessory that does *not* enforce the bond gate would
+  additionally show such a device exists in the wild, but is a nice-to-have.
 
 ## Backlog enabled by this device (short)
 

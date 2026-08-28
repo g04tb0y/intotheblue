@@ -71,17 +71,42 @@ def _on_disconnect(peer, event_args):
     logger.info("Central disconnected: %s", event_args.reason)
 
 
-def main(port, name, duration):
+def _on_pairing_complete(peer, event_args):
+    # In positive-control mode this is the moment the identity is distributed: on a
+    # successful Just Works bond the peripheral hands the central its IRK + identity
+    # address, which is exactly what lets the central resolve the advertised RPA.
+    logger.info("Pairing complete: %s", event_args)
+
+
+def main(port, name, duration, positive_control=False):
     ble_device = open_device(port, configure=True)
 
     ble_device.generic_access_service.device_name = name
     ble_device.generic_access_service.appearance = Appearance.computer
 
-    # Open security (no pairing) for maximum interoperability in tests
     from blatann.gap import IoCapabilities
-    ble_device.client.security.set_security_params(
-        passcode_pairing=False, bond=False, lesc_pairing=False,
-        io_capabilities=IoCapabilities.DISPLAY_ONLY, out_of_band=False)
+    if positive_control:
+        # Deliberately weak peripheral: a *positive control* for the identity-address
+        # disclosure check. It advertises a Resolvable Private Address and accepts an
+        # unauthenticated Just Works bond, distributing its IRK + identity address —
+        # the very behaviour a hardened Fast Pair accessory (e.g. the Redmi Buds 6
+        # Play) refuses. Run identity.extract against this device's RPA and the host
+        # should bond it and reveal the identity below.
+        identity = ble_device.address
+        logger.info("POSITIVE CONTROL — identity (expected disclosed) address: %s", identity)
+        # RPA advertising. 900s update rate keeps the address stable across a test run.
+        ble_device.set_privacy_settings(enabled=True, resolvable_address=True,
+                                        update_rate_seconds=900)
+        ble_device.client.security.set_security_params(
+            passcode_pairing=False, bond=True, lesc_pairing=False,
+            io_capabilities=IoCapabilities.NONE, out_of_band=False,
+            reject_pairing_requests=False)
+        ble_device.client.security.on_pairing_complete.register(_on_pairing_complete)
+    else:
+        # Open security (no pairing) for maximum interoperability in tests
+        ble_device.client.security.set_security_params(
+            passcode_pairing=False, bond=False, lesc_pairing=False,
+            io_capabilities=IoCapabilities.DISPLAY_ONLY, out_of_band=False)
 
     service = ble_device.database.add_service(SERVICE_UUID)
 
@@ -128,7 +153,13 @@ def main(port, name, duration):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=None, help="Dongle serial port (default: autodetect)")
-    parser.add_argument("--name", default="TestDevice", help="Advertising name (default: TestDevice)")
+    parser.add_argument("--name", default=None, help="Advertising name (default: TestDevice, "
+                        "or PosCtrlBuds with --positive-control)")
     parser.add_argument("--duration", type=int, default=600, help="Duration in seconds (default: 600)")
+    parser.add_argument("--positive-control", action="store_true",
+                        help="Weak peripheral: advertise a Resolvable Private Address and accept "
+                        "an unauthenticated Just Works bond (distributing IRK + identity). Use as "
+                        "a positive control for the identity.extract disclosure check.")
     args = parser.parse_args()
-    main(args.port, args.name, args.duration)
+    name = args.name or ("PosCtrlBuds" if args.positive_control else "TestDevice")
+    main(args.port, name, args.duration, positive_control=args.positive_control)

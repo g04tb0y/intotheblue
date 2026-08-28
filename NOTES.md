@@ -33,11 +33,18 @@ the phone holds the IRK, not our host.
 "disclosure works" checkpoint. The recon/scan half remains proven; the disclosure it
 exists to demonstrate does not reproduce on a current Fast Pair accessory.
 
-**Caveat / next.** One device, no *known-vulnerable* positive control — so we can't
-fully separate "device not vulnerable" from "this BlueZ version doesn't exhibit the
-leak at all". The identical failure of both tools does rule out an intotheblue defect.
-Getting an older/unpatched accessory that accepts a raw Just Works bond is the next
-step to turn that caveat into a measured result.
+**Caveat — RESOLVED with an in-house positive control.** The open question was whether
+the negative meant "device not vulnerable" or "this BlueZ version doesn't exhibit the
+leak at all". Built a positive control instead of buying one: `emulate.py
+--positive-control` makes the dongle advertise a **Resolvable Private Address** and
+accept an unauthenticated Just Works bond (blatann `set_privacy_settings` +
+`set_security_params(bond=True, io_caps=NONE)`; the peripheral always distributes its
+`id_key`). Ran `identity.extract` (host/hci0) against that RPA and it worked end to end:
+`Bonded: yes` → **`IDENTITY ADDRESS DISCLOSED — CE:C1:1B:51:DD:23`** (the dongle's static
+identity), correctly attributed by new-bond + name. So the pipeline is **proven correct
+in this environment**, and the Redmi negative is a genuine **device property** (it
+refuses the bond), not a tooling/stack defect. Optional remaining nicety: confirm on a
+real-world Fast Pair accessory that does *not* enforce the bond gate.
 
 ## Resume here — 2026-07-31, recon stage realigned and committed; disclosure untested
 
@@ -159,11 +166,13 @@ viability, filter, CSV and the three passive refusals without any hardware.
       table), and Whisper_Bully fails identically → not an intotheblue bug. Full run and
       the mechanism analysis in `docs/test-plan-redmi-buds-6.md` and *Resume here* above.
       Follow-up TODO added below: obtain a known-vulnerable target as a positive control.
-- [ ] **Obtain a known-vulnerable Fast Pair accessory as a positive control** — one
-      that accepts a raw Just Works bond — to confirm the disclosure path can work at all
-      in this environment/BlueZ version, separating "device not vulnerable" from "this
-      stack doesn't exhibit the leak". Without it the negative above has an untestable
-      caveat (see *Resume here*, Caveat).
+- [x] ~~**Positive control for the disclosure pipeline**~~ — done 2026-08-28 with an
+      **in-house** control: `emulate.py --positive-control` (dongle advertises an RPA +
+      accepts a Just Works bond). `identity.extract` disclosed the identity
+      (`CE:C1:1B:51:DD:23`) end-to-end → pipeline proven, Redmi negative is a device
+      property. See *Resume here* → Caveat RESOLVED, and the actions log.
+- [ ] *(optional)* Confirm on a **real-world** Fast Pair accessory that does not enforce
+      the bond gate — nice-to-have; the in-house control already validates the pipeline.
 - [ ] **Fused Model-ID masking** (`scan_fused.snapshot`) — BlueZ's bare `fast_pair="Yes"`
       wins the `or` over the dongle's decoded Model ID, so the fused table and the passive
       exposure verdict understate a discoverable target (seen live 2026-08-28: buds in
@@ -407,6 +416,22 @@ viability, filter, CSV and the three passive refusals without any hardware.
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **Built an in-house positive control for the identity disclosure and validated the
+  pipeline** (2026-08-28). Extended `emulate.py` with `--positive-control`: the dongle
+  advertises a Resolvable Private Address and accepts an unauthenticated Just Works bond,
+  distributing its IRK + identity. blatann 0.6.0 supports both
+  (`BleDevice.set_privacy_settings(enabled, resolvable_address=True)` and
+  `security.set_security_params(bond=True, io_capabilities=NONE)`; `_get_security_params`
+  always sets `kdist_own.id_key=True`, so the identity is distributed on every bond). The
+  two BLE radios are independent, so the dongle is the peripheral and the host adapter the
+  central in one machine — no phone needed. `identity.extract` against the emulated RPA
+  gave `Bonded: yes` → `IDENTITY ADDRESS DISCLOSED — CE:C1:1B:51:DD:23`, correctly
+  attributed. This proves `identity.extract` and the disclosure pipeline are correct in
+  this environment, so the 2026-08-28 Redmi Buds 6 Play negative is a device property (it
+  refuses the bond), not a tooling/stack defect. Generalises the T0.2 "emulate the target
+  to test the observer" method from *observation* to *disclosure*. `emulate.py` change is
+  in the working tree (not yet committed).
 
 - **Configured the `mattpocock-skills` engineering skills for this repo** (2026-08-02),
   via their `setup-matt-pocock-skills` scaffolder. Three config files under
