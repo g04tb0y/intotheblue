@@ -439,7 +439,14 @@ Options, best value/effort first — **currently starting (1)**:
      in `scan_classic` (BR/EDR MACs are always public) and a `Vendor (OUI)` row in the
      passive `exposure` report for public BLE addresses. Live-validated on a real Classic
      device (`00:1D:DF:7E:FB:44` "PHILIPS HTL2110" → OUI *Sunitec Enterprise Co.,Ltd*).
-   - [ ] **TX Power** parsed from raw advertising records — not started (see open question).
+   - [x] **TX Power** — done 2026-08-28. `scan_live._tx_power` reads the Tx Power Level AD
+     (0x0A) from blatann's parsed `entries` (stored as raw bytes on the receive path) and
+     converts to a signed dBm. New `tx_power` field + `TxPwr` column in the dongle scan;
+     merged onto the fused/BlueZ record; a `Tx Power` row in the `exposure` report shows a
+     path-loss (proximity) estimate `tx_power − rssi`. Live-validated on a real advertiser
+     (`46:0C:50:50:4D:61`, −8 dBm, RSSI −23 → path loss ≈ 15 dB).
+
+   **Item 1 is complete** — all enrichment sub-items landed and were hardware-validated.
 2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder).
    *2026-08-28 — implemented and **live-validated** on a real non-discoverable frame
    (buds bonded to a phone, out of pairing mode: FE2C payload `0000` → correctly decoded
@@ -492,14 +499,24 @@ Options, best value/effort first — **currently starting (1)**:
   system `ieee-data` CSVs). See next-steps item 1.
 - **Service-UUID → SIG name** in the scan table (blatann has assigned-number tables;
   already used for GATT names in `client.py`, not yet surfaced in the scan columns).
-- **TX Power** is not exposed directly by blatann's `AdvertisingData` in this version —
-  would need to parse it out of the raw advertising records.
+- ~~**TX Power** is not exposed directly by blatann~~ — DONE 2026-08-28: read from the
+  parsed AD `entries` (type 0x0A, raw bytes → signed dBm). See `scan_live._tx_power`.
 - **Class of Device minor** decoding covers only common majors (`scan_classic._MINOR`);
   extend as needed.
 - **Roadmap depth**: active enumeration, richer peripheral/server interaction, and
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **TX Power parsing — next-steps item 1 (now complete)** (2026-08-28, impl + live-validated).
+  `scan_live._tx_power` reads the Tx Power Level AD (0x0A) from blatann's parsed `entries`
+  (blatann exposes no property; on the receive path the value is raw bytes) and converts
+  to a signed dBm. New `tx_power` field + `TxPwr` column (after RSSI) in the dongle scan;
+  the field was added to `LeRecord` and merged in `scan_fused`; `exposure.report` gained a
+  `Tx Power` row with a path-loss proximity estimate (`tx_power − rssi`). Offline: −59/+4/
+  None via the real `from_ble_adv_records` path. Live: a real advertiser `46:0C:50:50:4D:61`
+  reported −8 dBm, RSSI −23 → path loss ≈ 15 dB. This closes enrichment item 1 entirely
+  (Model ID names, masking fix, SvcNames, SIG data, OUI, TX Power).
 
 - **OUI vendor lookup — next-steps item 1, last enrichment sub-item** (2026-08-28, impl +
   live-validated). New top-level `oui.py` (like `exposure.py`/`bond.py`, no blatann import)

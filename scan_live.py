@@ -18,7 +18,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from blatann.gap.advertise_data import AdvertisingPacketType
+from blatann.gap.advertise_data import AdvertisingData, AdvertisingPacketType
 from blatann.bt_sig.uuids import UUID_DESCRIPTION_MAP
 
 import livetable
@@ -114,6 +114,19 @@ def _uuid16(u) -> int | None:
     return v if isinstance(v, int) else None
 
 
+def _tx_power(adv) -> int | None:
+    """Advertised Tx Power Level in dBm (AD type 0x0A), or None if absent.
+
+    blatann has no property for it, so read it from the parsed AD entries. On the
+    receive path the value is stored as raw bytes; it is a signed int8 (dBm). With
+    RSSI it gives a path-loss estimate for proximity (path loss ≈ tx_power − rssi)."""
+    raw = adv.entries.get(AdvertisingData.Types.tx_power_level)
+    if raw is None:
+        return None
+    b = raw[0] if isinstance(raw, (bytes, bytearray)) else (raw & 0xFF)
+    return b - 256 if b >= 128 else b
+
+
 def _fast_pair(adv) -> str:
     """Identify Fast Pair advertising (UUID 0xFE2C). Returns the 3-byte model id
     (discoverable mode), 'Yes' (non-discoverable), or '' if not Fast Pair.
@@ -142,6 +155,7 @@ class DeviceRecord:
     protocol: str = ""
     fast_pair: str = ""
     connectable: bool = False
+    tx_power: int | None = None      # advertised Tx Power Level (dBm), if present
     directed: bool = False           # sent ADV_DIRECT_IND — reconnecting to a bonded peer
     fp_payload: bytes = b""          # raw 0xFE2C service data (after the UUID), for bond.py
     services: set = field(default_factory=set)
@@ -200,6 +214,10 @@ class DeviceRecord:
         if adv.flags is not None:
             self.flags = adv.flags
 
+        tx = _tx_power(adv)
+        if tx is not None:
+            self.tx_power = tx
+
 
 # --- Columns (extensible registry) ------------------------------------------
 # (header, width, function(record) -> str)
@@ -208,6 +226,7 @@ COLUMNS: list[livetable.Column] = [
     ("Addr",           6, lambda d: d.addr_type),
     ("Name",          14, lambda d: d.name),
     ("RSSI",           5, lambda d: str(d.rssi)),
+    ("TxPwr",          6, lambda d: f"{d.tx_power}" if d.tx_power is not None else "-"),
     ("Conn",           4, lambda d: "Yes" if d.connectable else "-"),
     ("FastPair",      16, lambda d: fp_display(d.fast_pair) or "-"),
     ("Manufacturer",  18, lambda d: d.manufacturer),

@@ -174,6 +174,7 @@ class FusedScanner:
             src = by_addr.get(rec.address.upper())
             if src is not None:
                 rec.connectable = src.connectable
+                rec.tx_power = src.tx_power
                 rec.directed = src.directed
                 rec.fp_payload = rec.fp_payload or src.fp_payload
                 rec.protocol = rec.protocol or src.protocol

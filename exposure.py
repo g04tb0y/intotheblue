@@ -85,6 +85,15 @@ def assess(rec) -> list[tuple[str, str, str]]:
                      "Accepts connections." if rec.connectable
                      else "Broadcast-only in the observed window."))
 
+    # Tx Power — with RSSI it gives a path-loss (proximity) cue
+    tx = getattr(rec, "tx_power", None)
+    if tx is not None:
+        note = "Advertised transmit power (AD type 0x0A)."
+        if rec.rssi:
+            note = (f"Advertised transmit power; path loss ≈ {tx - rec.rssi} dB "
+                    f"at RSSI {rec.rssi} — a proximity cue, higher means farther.")
+        rows.append(("Tx Power", f"{tx} dBm", note))
+
     # Context (identification only)
     if rec.name:
         rows.append(("Name", rec.name, ""))
