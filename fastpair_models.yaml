@@ -1,0 +1,18 @@
+# Google Fast Pair Model ID -> product name (offline registry).
+#
+# Discoverable Fast Pair advertising (service 0xFE2C) carries a 24-bit Model ID
+# assigned by Google at device registration. Google publishes no authoritative
+# offline dataset (the largest community list was taken down), so this file is
+# curated locally and grows from real captures:
+#
+#   1. capture a discoverable Fast Pair beacon with the dongle scan (activity 1):
+#      its Model ID shows in the FastPair column as 6 hex digits (e.g. 0C4020);
+#   2. attribute the device — e.g. connect and read its GATT device name;
+#   3. add a "<hex>: <name>" line under `models:` below.
+#
+# Keys are the 24-bit Model ID in hex (with or without a leading 0x); values are
+# free-text product names. Only verified mappings are recorded here.
+models:
+  # Captured live 2026-08-28 from the buds in discoverable pairing mode (dongle
+  # scan decoded the FE2C Model ID); attributed by the maintainer.
+  0xFB9B72: Redmi Buds 6 Play

@@ -31,6 +31,7 @@ import scan_classic
 # Direct module import (not the `bledev` package): this path must stay independent
 # of blatann / the dongle driver, which `bledev/__init__` pulls in.
 from bledev.manufacturers import get_manufacturer
+from bledev.sig import member_name
 
 # 16-bit UUID inside an `info` UUID line: 0000XXXX-0000-1000-8000-00805f9b34fb
 _UUID16 = re.compile(r"\(0000([0-9a-fA-F]{4})-0000-1000-8000-00805f9b34fb\)")
@@ -150,7 +151,10 @@ class LeScanner(scan_classic.ClassicScanner):
             rec.services.add(f"0x{uuid16:04X}")
             if uuid16 == _FAST_PAIR_UUID:
                 rec.fast_pair = rec.fast_pair or "Yes"
-            rec.protocol = _SERVICE_LABELS.get(uuid16, rec.protocol)
+            # curated short label first, then the SIG member-service vendor
+            label = _SERVICE_LABELS.get(uuid16) or member_name(uuid16)
+            if label:
+                rec.protocol = label
             return
         m = _UUID_ANY.search(value)
         if m:

@@ -173,11 +173,10 @@ viability, filter, CSV and the three passive refusals without any hardware.
       property. See *Resume here* → Caveat RESOLVED, and the actions log.
 - [ ] *(optional)* Confirm on a **real-world** Fast Pair accessory that does not enforce
       the bond gate — nice-to-have; the in-house control already validates the pipeline.
-- [ ] **Fused Model-ID masking** (`scan_fused.snapshot`) — BlueZ's bare `fast_pair="Yes"`
-      wins the `or` over the dongle's decoded Model ID, so the fused table and the passive
-      exposure verdict understate a discoverable target (seen live 2026-08-28: buds in
-      discoverable pairing mode reported "non-discoverable / medium"). Prefer the dongle's
-      Model ID when present.
+- [x] ~~**Fused Model-ID masking** (`scan_fused.snapshot`)~~ — fixed 2026-08-28 (impl,
+      not yet hardware-validated). `_merge_fast_pair()` now prefers a decoded Model ID
+      over a bare `"Yes"` from either backend, instead of the old `bluez or dongle`.
+      See the *Next steps* block and the actions log.
 - [x] ~~**See the fused table with real `Conn` values**~~ — done 2026-07-31, first
       real-hardware run: 5 `YES` / 4 `no` / 3 `?` over 12 devices. See *Resume here*.
 - [x] ~~**Find out whether a viable target exists at all in this environment**~~ —
@@ -410,13 +409,32 @@ goal (*identify as many paired BT devices as possible*) is best served by other 
 Options, best value/effort first — **currently starting (1)**:
 
 1. **Passive identification enrichment** (low effort, high value, serves the goal now):
-   - **Fast Pair Model ID → product name** — resolve the 3-byte Model ID against Google's
-     metadata registry (e.g. print "Redmi Buds 6 Play" instead of the raw ID).
-   - **Fix fused Model-ID masking** (`scan_fused.snapshot`) — BlueZ's bare `fast_pair="Yes"`
-     wins the `or` over the dongle's decoded Model ID; prefer the dongle's when present
-     (also closes the open TODO). Understates discoverable targets otherwise.
-   - **Service-UUID → SIG name** column in the dongle scan; **OUI vendor lookup** for
-     public addresses (local IEEE DB); **TX Power** parsed from raw advertising records.
+   *2026-08-28 — four items landed and were **hardware-validated** against the buds in
+   discoverable pairing mode (Model ID `FB9B72` captured live). See the actions log.*
+   - [x] **Fast Pair Model ID → product name** — new `bledev/fastpair.py` resolves the
+     24-bit Model ID against a **local** `fastpair_models.yaml` (mirrors the
+     `manufact.yaml`/`manufacturers.py` pattern; chosen over Google's live
+     `nearbydevices-pa` endpoint to keep the bench offline/non-phoning-home). The
+     FastPair column (scan_live + fused) prints the product name when the Model ID is
+     known, else the raw hex / `"Yes"`. Registry seeded from the live capture:
+     `0xFB9B72 → Redmi Buds 6 Play` (decoded by the dongle, attributed by the
+     maintainer). Grows from real captures — see the file header for the procedure.
+   - [x] **Fix fused Model-ID masking** (`scan_fused._merge_fast_pair`) — a decoded Model
+     ID now wins over a bare `"Yes"`; closed the TODO. **Validated live**: fused merge of
+     the RPA `4C:96:7E:68:F4:36` kept `FB9B72` instead of BlueZ's `"Yes"`, `target=FP+RPA`.
+   - [x] **Service-UUID → SIG name** — new `SvcNames` column in the **dongle** scan
+     (`scan_live`); records accumulate `service_names`. (Empty on pure FP discoverable
+     frames — they carry only FE2C service-data, no service-UUID list; expected.)
+   - [x] **Authoritative SIG data** (`bledev/sig.py`, from the `BluetoothSIGPublic/`
+     checkout the maintainer added) — company IDs (4018, up from manufact.yaml's 3877),
+     vendor **member** UUIDs (0xFE2C→Google …), service/characteristic names. Wired as
+     the *primary* source with graceful fallback in `manufacturers.get_manufacturer`,
+     `scan_live._service_name`/`_decode_protocol`, and `scan_le._add_uuid`. The checkout
+     is git-ignored (nested repo). Curated short labels still win over the raw registered
+     company name (e.g. "Google FastPair" over "Google LLC").
+   - [ ] **OUI vendor lookup** for public addresses — still open; the SIG company_ids are
+     BLE Company Identifiers, **not** IEEE MAC OUIs, so this needs a separate local IEEE
+     OUI DB. **TX Power** parsed from raw advertising records — not started.
 2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder):
    what is actually observable about *who is bonded to what* — Fast Pair non-discoverable
    frames carry an account-key filter that can signal "already bonded to someone", and
@@ -441,6 +459,25 @@ Options, best value/effort first — **currently starting (1)**:
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **Passive identification enrichment — next-steps item 1, hardware-validated + SIG data**
+  (2026-08-28). Delivered and validated live against the Redmi Buds 6 Play in discoverable
+  pairing mode. New `bledev/fastpair.py` + `fastpair_models.yaml` resolve a 24-bit Fast
+  Pair Model ID → product name from a **local** registry (design fork resolved with the
+  maintainer: local YAML over Google's live `nearbydevices-pa` API, to keep the bench
+  offline/non-phoning-home). Wired into the FastPair column of `scan_live`/`scan_fused`
+  (widened to 16, name-or-hex). Fixed the fused Model-ID masking (`_merge_fast_pair`: a
+  Model ID beats a bare `"Yes"`). Added a `SvcNames` column to the dongle scan naming
+  advertised service UUIDs. Then wired the **authoritative SIG dataset** the maintainer
+  checked out at `BluetoothSIGPublic/`: new `bledev/sig.py` loads company IDs (4018),
+  member/service/characteristic UUIDs, made the *primary* source (graceful fallback to the
+  bundled snapshot / blatann map) in `manufacturers`, `scan_live` and `scan_le`; checkout
+  git-ignored. **Live results** (dongle scan, `csv/scan_1787922603.csv`; fused,
+  `csv/fused_1787922685.csv`): Model ID `FB9B72` decoded, `type=Google FastPair`; fused
+  merge kept `FB9B72` over BlueZ `"Yes"` (`target=FP+RPA`, RPA `4C:96:7E:68:F4:36`).
+  Attributed `FB9B72 → Redmi Buds 6 Play` and seeded the registry; the FastPair column now
+  prints the product name. Offline checks also passed (synthetic ScanReport/AdvertisingData
+  fakes: column output, non-colliding CSV headers, all merge cases, SIG member fallback).
 
 - **Built an in-house positive control for the identity disclosure and validated the
   pipeline** (2026-08-28). Extended `emulate.py` with `--positive-control`: the dongle

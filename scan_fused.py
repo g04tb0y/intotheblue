@@ -28,6 +28,21 @@ import time
 import livetable
 import scan_le
 import scan_live
+from bledev.fastpair import display as fp_display
+
+
+def _merge_fast_pair(bluez_fp: str, dongle_fp: str) -> str:
+    """Fuse the two backends' Fast Pair fields, preferring a decoded Model ID.
+
+    Only the **dongle** decodes the 3-byte Model ID (BlueZ can report at most a
+    bare ``'Yes'``). A plain ``bluez or dongle`` let BlueZ's ``'Yes'`` win and
+    masked the Model ID — the very thing a Fast Pair target is named by — so a
+    specific Model ID from either side takes precedence over ``'Yes'``.
+    """
+    for value in (dongle_fp, bluez_fp):
+        if value and value != "Yes":
+            return value
+    return bluez_fp or dongle_fp
 
 
 def is_viable(rec) -> bool:
@@ -87,7 +102,7 @@ COLUMNS: list[livetable.Column] = [
     ("Name",          18, lambda d: d.name),
     ("RSSI",           5, lambda d: str(d.rssi) if d.rssi else "-"),
     ("Type",          16, lambda d: d.protocol),
-    ("FastPair",       8, lambda d: d.fast_pair or "-"),
+    ("FastPair",      16, lambda d: fp_display(d.fast_pair) or "-"),
     ("Manufacturer",  16, lambda d: d.manufacturer),
     ("Bond",           5, lambda d: "Yes" if d.paired else "-"),
     ("Svc",            4, lambda d: str(len(d.services)) if d.services else "-"),
@@ -160,7 +175,7 @@ class FusedScanner:
             if src is not None:
                 rec.connectable = src.connectable
                 rec.protocol = rec.protocol or src.protocol
-                rec.fast_pair = rec.fast_pair or src.fast_pair
+                rec.fast_pair = _merge_fast_pair(rec.fast_pair, src.fast_pair)
                 rec.manufacturer = rec.manufacturer or src.manufacturer
                 rec.name = rec.name or src.name
             records.append(rec)

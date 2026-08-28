@@ -12,3 +12,6 @@ __pycache__/
 
 # Config tool serena
 .serena/
+
+# Bluetooth SIG assigned-numbers checkout (authoritative vendor/UUID data)
+BluetoothSIGPublic/

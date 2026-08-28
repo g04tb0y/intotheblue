@@ -19,9 +19,11 @@ import time
 from dataclasses import dataclass, field
 
 from blatann.gap.advertise_data import AdvertisingPacketType
+from blatann.bt_sig.uuids import UUID_DESCRIPTION_MAP
 
 import livetable
-from bledev import get_manufacturer, open_device
+from bledev import get_manufacturer, open_device, sig
+from bledev.fastpair import display as fp_display
 
 # Continuous scanning is achieved by restarting chunks of this duration
 _SCAN_CHUNK_SECONDS = 5
@@ -65,6 +67,17 @@ _APPLE_MSG_TYPES = {
 }
 
 
+# Common name (e.g. "Battery") for a 16-bit assigned UUID. The authoritative SIG
+# checkout (bledev.sig) is primary; blatann's bundled table is the fallback when the
+# checkout is absent — surfaced so an advertised service is named, not just numbered.
+_SIG_SERVICE_NAME_BY_U16 = {k.uuid: v for k, v in UUID_DESCRIPTION_MAP.items()}
+
+
+def _service_name(u16: int) -> str:
+    """Common name for a 16-bit service UUID, or '' if unknown/custom."""
+    return sig.uuid_name(u16) or _SIG_SERVICE_NAME_BY_U16.get(u16, "")
+
+
 def _addr_type_short(report) -> str:
     return _ADDR_TYPE_SHORT.get(report.peer_address.get_addr_type_str(), "?")
 
@@ -83,7 +96,9 @@ def _decode_protocol(adv) -> str:
     sd = adv.service_data
     if sd and len(sd) >= 2:
         uuid16 = int.from_bytes(sd[:2], "little")
-        return _SERVICE_DATA_UUIDS.get(uuid16, f"svc 0x{uuid16:04X}")
+        # curated short label first, then the SIG member-service vendor, then raw
+        return (_SERVICE_DATA_UUIDS.get(uuid16) or sig.member_name(uuid16)
+                or f"svc 0x{uuid16:04X}")
     return ""
 
 
@@ -128,6 +143,7 @@ class DeviceRecord:
     fast_pair: str = ""
     connectable: bool = False
     services: set = field(default_factory=set)
+    service_names: set = field(default_factory=set)
     flags: int | None = None
     count: int = 0
     first_seen: float = field(default_factory=time.time)
@@ -165,6 +181,11 @@ class DeviceRecord:
 
         for uuid in adv.service_uuids:
             self.services.add(str(uuid))
+            u16 = _uuid16(uuid)
+            if u16 is not None:
+                name = _service_name(u16)
+                if name:
+                    self.service_names.add(name)
 
         if adv.flags is not None:
             self.flags = adv.flags
@@ -178,10 +199,11 @@ COLUMNS: list[livetable.Column] = [
     ("Name",          14, lambda d: d.name),
     ("RSSI",           5, lambda d: str(d.rssi)),
     ("Conn",           4, lambda d: "Yes" if d.connectable else "-"),
-    ("FastPair",       8, lambda d: d.fast_pair or "-"),
+    ("FastPair",      16, lambda d: fp_display(d.fast_pair) or "-"),
     ("Manufacturer",  18, lambda d: d.manufacturer),
     ("Type",          17, lambda d: d.protocol),
     ("Svc",            4, lambda d: str(len(d.services)) if d.services else "-"),
+    ("SvcNames",      22, lambda d: ", ".join(sorted(d.service_names)) if d.service_names else "-"),
     ("Pkt",            4, lambda d: str(d.count)),
     ("Age",            4, lambda d: f"{int(time.time() - d.last_seen)}s"),
 ]

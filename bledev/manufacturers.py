@@ -1,9 +1,15 @@
-"""Resolve a BLE Company Identifier from manufact.yaml (Bluetooth SIG)."""
+"""Resolve a BLE Company Identifier to a vendor name.
+
+Prefers the authoritative SIG checkout (`bledev.sig`, from BluetoothSIGPublic) and
+falls back to the bundled `manufact.yaml` snapshot when it is absent.
+"""
 from __future__ import annotations
 
 import os
 
 import yaml
+
+from . import sig
 
 # manufact.yaml lives at the project root, one level above this package
 _DEFAULT_YAML = os.path.join(os.path.dirname(os.path.dirname(__file__)), "manufact.yaml")
@@ -23,9 +29,11 @@ def load_manufacturer_data(path: str = _DEFAULT_YAML) -> dict[int, str]:
 
 
 def get_manufacturer(mnf_id: int) -> str:
-    """Return '<id> <name>' for a company id, or 'N/A' if unknown."""
-    lookup = load_manufacturer_data()
-    name = lookup.get(mnf_id)
+    """Return '<id> <name>' for a company id, or 'N/A' if unknown.
+
+    SIG registry first (up to date), then the bundled snapshot.
+    """
+    name = sig.company_name(mnf_id) or load_manufacturer_data().get(mnf_id)
     if name is None:
         return "N/A"
     return f"{mnf_id} {name}"
