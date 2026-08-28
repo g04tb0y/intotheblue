@@ -402,6 +402,31 @@ viability, filter, CSV and the three passive refusals without any hardware.
   a current accessory — pursue the goal by whatever fits scan/select/act (advertising,
   GATT, Classic SDP/CoD, proximity, and a future known-vulnerable positive control).
 
+## Next steps (prioritised) — 2026-08-28
+
+Identity-disclosure stage is closed/validated (pipeline works; hardened Fast Pair
+devices refuse the bond, so as an unmask technique its reach is narrow). The standing
+goal (*identify as many paired BT devices as possible*) is best served by other avenues.
+Options, best value/effort first — **currently starting (1)**:
+
+1. **Passive identification enrichment** (low effort, high value, serves the goal now):
+   - **Fast Pair Model ID → product name** — resolve the 3-byte Model ID against Google's
+     metadata registry (e.g. print "Redmi Buds 6 Play" instead of the raw ID).
+   - **Fix fused Model-ID masking** (`scan_fused.snapshot`) — BlueZ's bare `fast_pair="Yes"`
+     wins the `or` over the dongle's decoded Model ID; prefer the dongle's when present
+     (also closes the open TODO). Understates discoverable targets otherwise.
+   - **Service-UUID → SIG name** column in the dongle scan; **OUI vendor lookup** for
+     public addresses (local IEEE DB); **TX Power** parsed from raw advertising records.
+2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder):
+   what is actually observable about *who is bonded to what* — Fast Pair non-discoverable
+   frames carry an account-key filter that can signal "already bonded to someone", and
+   reconnect-directed advertising reveals relationships. Needs study before coding.
+3. **Cloning / emulation** (bigger roadmap arc): `emulate.py --positive-control` is the
+   first step; extend it to **clone a captured real Fast Pair advertisement** (FE2C +
+   exact Model ID) to exercise seekers/phones without the device.
+4. *(optional)* A real-world **known-vulnerable Fast Pair accessory** as a positive control
+   on real hardware — nice-to-have; the in-house control already validates the pipeline.
+
 ## Open questions — to study / evaluate
 
 - **OUI vendor lookup** for public (non-random) addresses — would identify the vendor

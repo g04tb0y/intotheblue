@@ -185,21 +185,25 @@ depth, this one for host-side interaction.
 
 **Identity address disclosure (`identity.py`)** — the per-device active action. A
 device advertising an RPA should keep its permanent Identity Address secret from
-anyone without its IRK; this check tests that.
+anyone without its IRK; this check tests whether that holds.
 
-It opens a plain BLE connection and then looks for a *second* address appearing in
-BlueZ's device table under the target's name. **The connection is where the disclosure
-happens**: the host resolves the peer's private address and caches its identity address
-while processing connection completion, at HCI level, below SMP and GATT. Only if that
-produced nothing attributable — typically an RPA advertising no name — does the check
-register a `NoInputNoOutput` (Just Works) agent and attempt a **pairing**, where a new
-*bond* is the remaining way to tie an address to the peer just contacted. When the
-connection alone answers, no pairing is attempted and nothing is left on the target.
+It opens a plain BLE connection, registers a `NoInputNoOutput` (Just Works) agent and
+attempts a **bond**, watching BlueZ's device table for a *second* address attributable
+to the target (its name, or a new bond). **The bond is the mechanism**: resolving an RPA
+requires the peer's IRK, and the host only obtains it when SMP key distribution
+completes — a successful Just Works bond hands over the IRK **and** the identity address.
+(The check does look at the connection first, but that surfaces the identity only when
+the host *already* holds the peer's IRK from a prior bond; on first contact there is no
+IRK, so the bond is what discloses.) **No GATT characteristic is written**; the Fast Pair
+service check is advisory and never gates the flow.
 
-**No GATT characteristic is written**, and the Fast Pair service check is advisory and
-never gates the flow — which is the point: the disclosure happens in the *host's* device
-table, outside the accessory's application layer, so an accessory patched against
-CVE-2025-36911 is not protected by that fix here.
+**Validated on real hardware** (2026-08-28 — see `docs/test-plan-redmi-buds-6.md`): a
+current Fast Pair accessory (Redmi Buds 6 Play) **refuses** the raw Just Works bond
+(`AuthenticationCanceled`) — it enforces the Fast Pair pairing gate — so nothing is
+disclosed, and the reference tool Whisper_Bully fails identically. Against a device that
+*accepts* the bond the identity is disclosed correctly; that path is proven end-to-end
+with the in-house **positive control** (`emulate.py --positive-control`, below). So a
+hardened accessory disclosing nothing here is the expected outcome, not a defect.
 
 Guard-rails, because this one transmits. Three preconditions are refused **without
 sending anything**, so a pointless target costs nothing instead of a minute:
@@ -247,6 +251,21 @@ counter). Useful to test apps or a second central.
 To verify it: connect from your phone with the **nRF Connect** app, or with
 `client.py` from a second dongle.
 
+**Positive control for the disclosure check (`--positive-control`)** — makes the dongle
+a deliberately weak peripheral: it advertises a **Resolvable Private Address** and
+accepts an unauthenticated **Just Works** bond, distributing its IRK + identity address
+(exactly what a hardened Fast Pair accessory refuses). Since the dongle (peripheral) and
+the host adapter (central) are independent radios, one machine runs both sides — no phone
+needed. Point the identity-disclosure check at this RPA and it bonds and reveals the
+dongle's identity, validating the whole disclosure pipeline end-to-end. This is how the
+disclosure path was proven (see the identity-disclosure section above).
+
+```bash
+.venv310/bin/python emulate.py --positive-control          # advertises as 'PosCtrlBuds'
+# then run CLI activity 3 (or scan_le) and the identity-disclosure check against the
+# 'PosCtrlBuds' RPA — it should disclose the dongle's identity address.
+```
+
 ## Layout
 
 ```
@@ -259,7 +278,7 @@ identity.py     active identity-address (BDADDR) disclosure check, host-side
 livetable.py    shared full-screen curses live-table UI
 scan.py         batch BLE scan -> CSV
 client.py       central: connect + GATT exploration
-emulate.py      peripheral: advertising + GATT server
+emulate.py      peripheral: advertising + GATT server (+ --positive-control: RPA + Just Works bond, disclosure test target)
 bledev/         shared BLE utilities
   device.py       open dongle + port autodetection
   manufacturers.py Company Identifier lookup from manufact.yaml
