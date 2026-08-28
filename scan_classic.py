@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 import livetable
+import oui
 
 # Strips any ANSI/CSI escape sequence (colors, cursor moves, erase-line, ...)
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -141,6 +142,8 @@ class ClassicRecord:
 COLUMNS: list[livetable.Column] = [
     ("Address",   19, lambda d: d.address),
     ("Name",      22, lambda d: d.name),
+    # BR/EDR addresses are always public, so the IEEE OUI names the manufacturer.
+    ("Vendor",    20, lambda d: oui.lookup(d.address) or "-"),
     ("Class",     26, lambda d: d.cod_label),
     ("Icon",      14, lambda d: d.icon),
     ("RSSI",       5, lambda d: str(d.rssi) if d.rssi else "-"),

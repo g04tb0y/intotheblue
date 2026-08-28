@@ -8,6 +8,7 @@ which devices deserve a scoped, authorised active test with a dedicated tool.
 from __future__ import annotations
 
 import bond
+import oui
 
 _FOOTER = ("Passive assessment from advertising only — no packets sent. "
            "Confirming exploitability requires a scoped, authorised active test.")
@@ -64,6 +65,14 @@ def assess(rec) -> list[tuple[str, str, str]]:
     # Address type — identity exposure / trackability
     value, note = addr_note(rec.addr_type)
     rows.append(("Address type", value, note))
+
+    # Vendor from the IEEE OUI — only meaningful for a public address (a random one
+    # carries no OUI, so we never look it up and never guess a vendor from its bytes).
+    if rec.addr_type == "pub":
+        vendor = oui.lookup(rec.address)
+        if vendor:
+            rows.append(("Vendor (OUI)", vendor,
+                         "Manufacturer resolved from the IEEE OUI of this public address."))
 
     # Connectable — prerequisite for any connection-based check.
     # None = the scan backend does not report it (BlueZ discovery); don't guess.

@@ -432,9 +432,14 @@ Options, best value/effort first — **currently starting (1)**:
      `scan_live._service_name`/`_decode_protocol`, and `scan_le._add_uuid`. The checkout
      is git-ignored (nested repo). Curated short labels still win over the raw registered
      company name (e.g. "Google FastPair" over "Google LLC").
-   - [ ] **OUI vendor lookup** for public addresses — still open; the SIG company_ids are
-     BLE Company Identifiers, **not** IEEE MAC OUIs, so this needs a separate local IEEE
-     OUI DB. **TX Power** parsed from raw advertising records — not started.
+   - [x] **OUI vendor lookup** for public addresses — done 2026-08-28. New top-level
+     `oui.py` resolves the manufacturer from a public MAC's IEEE OUI (longest prefix: MA-S
+     36-bit → MA-M 28-bit → MA-L 24-bit) using the system `ieee-data` CSVs, nmap fallback.
+     Random BLE addresses are **never** looked up (no OUI). Surfaced as a `Vendor` column
+     in `scan_classic` (BR/EDR MACs are always public) and a `Vendor (OUI)` row in the
+     passive `exposure` report for public BLE addresses. Live-validated on a real Classic
+     device (`00:1D:DF:7E:FB:44` "PHILIPS HTL2110" → OUI *Sunitec Enterprise Co.,Ltd*).
+   - [ ] **TX Power** parsed from raw advertising records — not started (see open question).
 2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder).
    *2026-08-28 — implemented and **live-validated** on a real non-discoverable frame
    (buds bonded to a phone, out of pairing mode: FE2C payload `0000` → correctly decoded
@@ -483,8 +488,8 @@ Options, best value/effort first — **currently starting (1)**:
 
 ## Open questions — to study / evaluate
 
-- **OUI vendor lookup** for public (non-random) addresses — would identify the vendor
-  from the MAC even without manufacturer data; needs a local IEEE OUI database.
+- ~~**OUI vendor lookup** for public (non-random) addresses~~ — DONE 2026-08-28 (`oui.py`,
+  system `ieee-data` CSVs). See next-steps item 1.
 - **Service-UUID → SIG name** in the scan table (blatann has assigned-number tables;
   already used for GATT names in `client.py`, not yet surfaced in the scan columns).
 - **TX Power** is not exposed directly by blatann's `AdvertisingData` in this version —
@@ -495,6 +500,18 @@ Options, best value/effort first — **currently starting (1)**:
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **OUI vendor lookup — next-steps item 1, last enrichment sub-item** (2026-08-28, impl +
+  live-validated). New top-level `oui.py` (like `exposure.py`/`bond.py`, no blatann import)
+  resolves a manufacturer from a public MAC's IEEE OUI, longest prefix first (MA-S 36-bit →
+  MA-M 28-bit → MA-L 24-bit) from the system `ieee-data` CSVs (/var/lib/ieee-data/*.csv,
+  ~53k entries), nmap `nmap-mac-prefixes` fallback, None otherwise. Random BLE addresses
+  are guarded out (`lookup(..., random=True) → None`) — they carry no OUI. Wired as a
+  `Vendor` column in `scan_classic` and a `Vendor (OUI)` row in `exposure.report` for public
+  BLE addresses. Offline: TP-Link (E8:48:B8), Nokia Shanghai Bell (28:6F:B9), random guard.
+  Live: a real Classic device `00:1D:DF:7E:FB:44` "PHILIPS HTL2110" resolved to its OUI
+  owner *Sunitec Enterprise Co.,Ltd* — the ODM behind the brand name. Leaves only TX Power
+  open in next-steps item 1.
 
 - **Fast Pair advertisement clone — next-steps item 3** (2026-08-28, impl + live-validated).
   New `emulate.py --fast-pair MODELID`: the dongle emits a faithful, nameless Fast Pair
