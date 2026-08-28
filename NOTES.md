@@ -463,9 +463,21 @@ Options, best value/effort first — **currently starting (1)**:
    record. **To validate live:** pair the buds to a phone, take them *out* of pairing
    mode so they advertise non-discoverable FE2C, and run the exposure check — the account
    key filter should read "bonded".
-3. **Cloning / emulation** (bigger roadmap arc): `emulate.py --positive-control` is the
-   first step; extend it to **clone a captured real Fast Pair advertisement** (FE2C +
-   exact Model ID) to exercise seekers/phones without the device.
+3. **Cloning / emulation** (bigger roadmap arc). *2026-08-28 — first extension done and
+   live-validated.* `emulate.py --fast-pair MODELID` clones a real Fast Pair discoverable
+   advertisement: Service Data (0x16) under 0xFE2C carrying the exact 3-byte Model ID,
+   plus FE2C in the 16-bit UUID list, connectable, **nameless** (a real FP device is
+   nameless; the seeker resolves the name from the Model ID via Google's registry). Raw
+   AD `02010606162cfefb9b7203032cfe` for `fb9b72`. Validated: offline round-trip through
+   `scan_live._fast_pair` → `FB9B72`; on air via an independent receiver (BlueZ/hci0 saw
+   `CE:C1:1B:51:DD:23 FE2C "Google Fast Pair"`); the phone discovered it and let a connect
+   attempt start. **Finding:** the phone showed no Fast Pair half-sheet because it already
+   owns this model (bonded to the real buds) — Fast Pair only offers the half-sheet for a
+   model you do *not* already own; validating the half-sheet needs a seeker without the
+   Redmi buds. Clones only the *advertisement* — the FP GATT (anti-spoofing key exchange)
+   is not implemented, so pairing does not complete. Next: implement the FE2C GATT for a
+   fuller emulation; **clone from a live capture** (wire the scan's decoded Model ID
+   straight into `--fast-pair`).
 4. *(optional)* A real-world **known-vulnerable Fast Pair accessory** as a positive control
    on real hardware — nice-to-have; the in-house control already validates the pipeline.
 
@@ -483,6 +495,19 @@ Options, best value/effort first — **currently starting (1)**:
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **Fast Pair advertisement clone — next-steps item 3** (2026-08-28, impl + live-validated).
+  New `emulate.py --fast-pair MODELID`: the dongle emits a faithful, nameless Fast Pair
+  discoverable advertisement (FE2C Service Data + Model ID + FE2C in the 16-bit UUID list,
+  connectable), folding the old scratchpad `fp_advertiser.py` into a first-class mode.
+  Mutually exclusive with `--positive-control`; validates the 6-hex Model ID. Offline:
+  round-trips through `scan_live._fast_pair` to the Model ID, serializes to
+  `02010606162cfefb9b7203032cfe`. Live: BlueZ/hci0 (independent receiver) saw the dongle
+  advertising FE2C while the clone ran; the phone discovered it. Half-sheet did not show —
+  the phone already owns this model (bonded to the real buds); Fast Pair only offers to
+  pair a model you don't already have. Advertisement-only (no FP GATT), so pairing can't
+  complete. Made the clone nameless after first seeing the phone list it by the scan-
+  response name, which masks the registry-driven FP recognition.
 
 - **Bond / pairing-relationship enumeration — next-steps item 2** (2026-08-28, impl +
   offline-validated, live validation of the account key filter pending). New passive
