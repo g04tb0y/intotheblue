@@ -79,6 +79,8 @@ class LeRecord:
     protocol: str = ""
     fast_pair: str = ""
     connectable: bool | None = None
+    directed: bool = False           # merged from the dongle (BlueZ has no PDU type)
+    fp_payload: bytes = b""          # merged from the dongle, for bond.py
     connected: bool = False
     paired: bool = False
     services: set = field(default_factory=set)

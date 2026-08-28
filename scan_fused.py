@@ -174,6 +174,8 @@ class FusedScanner:
             src = by_addr.get(rec.address.upper())
             if src is not None:
                 rec.connectable = src.connectable
+                rec.directed = src.directed
+                rec.fp_payload = rec.fp_payload or src.fp_payload
                 rec.protocol = rec.protocol or src.protocol
                 rec.fast_pair = _merge_fast_pair(rec.fast_pair, src.fast_pair)
                 rec.manufacturer = rec.manufacturer or src.manufacturer

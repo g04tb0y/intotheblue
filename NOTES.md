@@ -435,10 +435,34 @@ Options, best value/effort first — **currently starting (1)**:
    - [ ] **OUI vendor lookup** for public addresses — still open; the SIG company_ids are
      BLE Company Identifiers, **not** IEEE MAC OUIs, so this needs a separate local IEEE
      OUI DB. **TX Power** parsed from raw advertising records — not started.
-2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder):
-   what is actually observable about *who is bonded to what* — Fast Pair non-discoverable
-   frames carry an account-key filter that can signal "already bonded to someone", and
-   reconnect-directed advertising reveals relationships. Needs study before coding.
+2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder).
+   *2026-08-28 — implemented and **live-validated** on a real non-discoverable frame
+   (buds bonded to a phone, out of pairing mode: FE2C payload `0000` → correctly decoded
+   "not paired — empty account key filter"). Finding: a plain Bluetooth bond does **not**
+   write a Fast Pair account key — a non-empty filter needs the device saved to a Google
+   account (account-key flow). **Conclusive:** even after a full forget + re-pair via the
+   phone's Fast Pair half-sheet, the buds advertised `0000` across three distinct
+   addresses and the whole discoverable↔non-discoverable lifecycle — the Redmi Buds 6 Play
+   simply do not populate a Fast Pair account key filter (consistent with the prior
+   NEGATIVE identity-disclosure result: a minimal/hardened Fast Pair accessory). The
+   non-empty/"bonded" branch is therefore validated on synthetic frames only.* New
+   passive `bond.py` decodes what advertising reveals about bonds — **existence and
+   count, never identity** (the account key filter is a one-way Bloom filter, reconnect
+   addresses are RPAs):
+   - **Fast Pair non-discoverable account key filter** (0xFE2C service data): empty →
+     not paired to any account; non-empty → bonded to ≥1 account/seeker, filter grows
+     with the number of keys; plus the show/hide reconnection UI flag. Frame layout and
+     type nibbles from the Google "Provider advertising signal" spec (fetch of
+     developers.google.com is blocked here — captured in `bond.py`'s docstring). Only
+     decodable on the **dongle** path (raw service-data); the BlueZ path says so.
+   - **Directed advertising** (`connectable_directed` / ADV_DIRECT_IND): reconnecting to
+     a specific bonded peer. `scan_live` now captures a sticky `directed` flag.
+   - **Host-side bond**: BlueZ Paired/Bonded (already captured as `paired`).
+   Wired into `exposure.report` (both BLE and fused menus). `scan_live.DeviceRecord`
+   gained `fp_payload`/`directed`; `scan_fused` merges them onto the actionable BlueZ
+   record. **To validate live:** pair the buds to a phone, take them *out* of pairing
+   mode so they advertise non-discoverable FE2C, and run the exposure check — the account
+   key filter should read "bonded".
 3. **Cloning / emulation** (bigger roadmap arc): `emulate.py --positive-control` is the
    first step; extend it to **clone a captured real Fast Pair advertisement** (FE2C +
    exact Model ID) to exercise seekers/phones without the device.
@@ -459,6 +483,31 @@ Options, best value/effort first — **currently starting (1)**:
   device cloning/emulation — all still to be designed into the scan/select/act model.
 
 ## Actions log (recent first)
+
+- **Bond / pairing-relationship enumeration — next-steps item 2** (2026-08-28, impl +
+  offline-validated, live validation of the account key filter pending). New passive
+  `bond.py`: decodes the Fast Pair non-discoverable **account key filter** (empty → not
+  paired; non-empty → bonded to ≥1 account/seeker, + show/hide reconnection UI), flags
+  **directed reconnect advertising**, and surfaces the **host-side bond**. Reports
+  existence/count of bonds, never identity (one-way Bloom filter, RPA peers). Captured
+  `fp_payload` + sticky `directed` in `scan_live.DeviceRecord`, added the same fields to
+  `LeRecord` and merged them in `scan_fused.snapshot`, and wired `bond.signals` into
+  `exposure.report` (reachable from both the BLE and fused per-device menus). Frame layout
+  from the Google "Provider advertising signal" spec (primary-source fetch blocked in this
+  env; type nibbles 0b0000 show-UI / 0b0010 hide-UI confirmed via search). Unit-tested the
+  decoder on synthetic frames (discoverable/empty/bonded-show/bonded-hide/length-overflow)
+  and the report on synthetic dongle + BlueZ records. **Live-validated 2026-08-28**: with
+  the buds bonded to a phone and out of pairing mode, the dongle captured their
+  non-discoverable FE2C frame `0000` (RPA `4C:96:7E:68:F4:36`, `directed=False`) and the
+  decoder read it correctly as an **empty account key filter → not paired to an account**.
+  Finding: normal Bluetooth pairing does not populate a Fast Pair account key; a non-empty
+  filter requires the Fast Pair account-key flow (save to a Google account). Pushed further
+  (3 more captures incl. a full forget + re-pair via the Fast Pair half-sheet): the buds
+  stayed `0000` across three addresses and the whole discoverable↔non-discoverable
+  lifecycle — **conclusively** these buds never populate the account key filter (minimal
+  Fast Pair, as in the earlier NEGATIVE test), so the non-empty/"bonded" render stays
+  synthetic-only here. Refined the empty-filter note (drop the meaningless reconnection-UI
+  nibble when no filter is present).
 
 - **Passive identification enrichment — next-steps item 1, hardware-validated + SIG data**
   (2026-08-28). Delivered and validated live against the Redmi Buds 6 Play in discoverable

@@ -7,6 +7,8 @@ which devices deserve a scoped, authorised active test with a dedicated tool.
 """
 from __future__ import annotations
 
+import bond
+
 _FOOTER = ("Passive assessment from advertising only — no packets sent. "
            "Confirming exploitability requires a scoped, authorised active test.")
 
@@ -55,6 +57,9 @@ def assess(rec) -> list[tuple[str, str, str]]:
     else:
         rows.append(("Fast Pair (FE2C)", f"discoverable, model id {rec.fast_pair}",
                      "In the Fast Pair target class and in discoverable (pairing) mode."))
+
+    # Bond / pairing-relationship signals (passive) — who, if anyone, this is bonded to
+    rows.extend(bond.signals(rec))
 
     # Address type — identity exposure / trackability
     value, note = addr_note(rec.addr_type)

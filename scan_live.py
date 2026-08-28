@@ -142,6 +142,8 @@ class DeviceRecord:
     protocol: str = ""
     fast_pair: str = ""
     connectable: bool = False
+    directed: bool = False           # sent ADV_DIRECT_IND — reconnecting to a bonded peer
+    fp_payload: bytes = b""          # raw 0xFE2C service data (after the UUID), for bond.py
     services: set = field(default_factory=set)
     service_names: set = field(default_factory=set)
     flags: int | None = None
@@ -166,6 +168,8 @@ class DeviceRecord:
 
         if report.packet_type in _CONNECTABLE:
             self.connectable = True
+        if report.packet_type == AdvertisingPacketType.connectable_directed:
+            self.directed = True       # sticky: a reconnect-directed frame is the signal
 
         if adv.manufacturer_data:
             mnf_id = int.from_bytes(adv.manufacturer_data[:2], "little")
@@ -178,6 +182,12 @@ class DeviceRecord:
         fp = _fast_pair(adv)
         if fp:
             self.fast_pair = fp
+        # Keep the raw FE2C payload so bond.py can decode the account key filter
+        # (bond state) — a non-discoverable frame carries it, a discoverable one the
+        # Model ID; both live after the 2-byte UUID.
+        sd = adv.service_data
+        if sd and len(sd) >= 2 and int.from_bytes(sd[:2], "little") == _FAST_PAIR_UUID:
+            self.fp_payload = bytes(sd[2:])
 
         for uuid in adv.service_uuids:
             self.services.add(str(uuid))
