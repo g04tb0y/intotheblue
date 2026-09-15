@@ -446,7 +446,169 @@ Options, best value/effort first — **currently starting (1)**:
      path-loss (proximity) estimate `tx_power − rssi`. Live-validated on a real advertiser
      (`46:0C:50:50:4D:61`, −8 dBm, RSSI −23 → path loss ≈ 15 dB).
 
-   **Item 1 is complete** — all enrichment sub-items landed and were hardware-validated.
+   **Item 1 is complete as advertising-based enrichment** — all sub-items landed and were
+   hardware-validated. **This does NOT reach the standing goal** (see below): every one of
+   these signals is derived from *advertising*, so none of them can see a device that is in
+   an active connection to a phone and therefore not advertising.
+
+## The goal is NOT reached — phone-connected devices are invisible to passive scanning (2026-08-28)
+
+The maintainer's standing goal is *identify as many paired Bluetooth devices as possible*.
+Two concrete targets we cannot currently identify, and why:
+
+- **Redmi Buds 6 Play ↔ the maintainer's Android** (BLE / Fast Pair): while connected the
+  buds stop discoverable advertising; at most they emit brief RPA reconnection frames with
+  an empty account key filter (see item 2). A passive advertising scanner cannot attribute
+  or even reliably see them mid-connection.
+- **JBL Go 3 ↔ the maintainer's iPhone** (BR/EDR / Classic): while connected it holds an
+  active ACL link and is **not** in inquiry scan, so `scan_classic` (bluetoothctl inquiry)
+  never sees it. Classic has no advertising to fall back on.
+
+**Root cause.** All of intotheblue's identification is *advertising/inquiry* based. A device
+already bonded to and connected with a phone communicates over a point-to-point link on
+hopping data channels and does not advertise — so the thing we most want to enumerate is
+exactly the thing this whole approach cannot observe.
+
+**What could observe them — connection *sniffing*, not scanning** (researched 2026-08-28):
+- **BLE**: follow the connection. A sniffer catches the phone's `CONNECT_IND` (carries both
+  addresses, access address, channel map, hop increment) and then follows the hopping link,
+  capturing the data-channel packets — so the device becomes visible *while connected to the
+  phone*. Best-in-class tool: **Sniffle** (nccgroup). **Corrected hardware fact:** current
+  Sniffle (master) runs **only on TI CC1352/CC26x2**, NOT the nRF52840 — the README has zero
+  Nordic mentions; nRF52840 support existed only in *old* Sniffle releases (unmaintained).
+  So:
+    - **Sniffle never supported nRF52840** — checked every tag v1.0–v1.11.0, zero Nordic
+      mentions (an earlier note of mine claiming an "old nRF52840 Sniffle build" was wrong).
+    - the cheap maintained path is a **TI CC2652P** board — the **SONOFF ZBDongle-P
+      (~€20-25)**. ⚠️ **Buy the right variant**: SONOFF's "Zigbee 3.0 USB Dongle Plus" ships
+      as **ZBDongle-P = CC2652P (TI)** [works] *and* **ZBDongle-E = EFR32MG21 (Silicon Labs)**
+      [does NOT work] — only the **-P** works with Sniffle. Prebuilt firmware exists (verified: release
+      v1.11.0 asset `sniffle_cc1352p1_cc2652p1.hex`), so no compiling. Flash via
+      `cc2538-bsl.py --bootloader-sonoff-usb` (chip is a CP2102N → /dev/ttyUSB0); use the
+      `sultanqasim/cc2538-bsl` fork / PR #173 for a known post-flash reset bug, and the
+      `_1M.hex` variant for some 2022-era dongles. Keep the nRF52840 for blatann. Sniffle
+      scans all 3 advertising channels at once → ~3× more reliable connection detection.
+    - **ZigStar GW (LAN+USB) — hardware-probed 2026-09-15; NOT usable for Sniffle (see FINAL VERDICT).** Right
+      radio (**CC2652P**, module E72-2G4M20S1E / RF-BM-2652P2), and it IS connected by USB
+      (a **CH340 → /dev/ttyUSB0**; an earlier "LAN-only" claim of mine was wrong). But the
+      CH340 does **not** reach the CC2652P directly: probed `ttyUSB0` and got **no Z-Stack MT
+      SYS_PING reply** (115200/230400/460800/2000000) and **no CC26xx serial-bootloader sync**
+      (cc2538-bsl, both `--bootloader-sonoff-usb` and `--bootloader-invert-lines`: "Timeout
+      waiting for ACK"). The CH340 goes to the **ESP32 (WT32-ETH01)**; the CC2652P sits
+      *behind* it (RST/BSL on ESP32 GPIOs zRST/zBSL, UART on GPIO5/17), reached only *through*
+      the ESP32 — the official flash path is `cc2538-bsl.py -p socket://ip:6638` over the
+      ESP32's TCP stream_server (115200). **Architectural mismatch:** Sniffle needs the
+      CC2652P on a **direct** USB-UART at **2 Mbps** (the SONOFF ZBDongle-P wires CC2652P
+      straight to a CP2102N — no MCU between). On the ZigStar the CC2652P is always behind the
+      ESP32 bridge (USB *or* LAN), so Sniffle's direct-serial model doesn't fit and 2 Mbps
+      through the ESP32 is the same bottleneck either way.
+      **FINAL VERDICT (same day, verified — not usable).** Chased the "USB mode" hard: set
+      both DIP switches ON (docs say USB Coordinator mode, "without connection to
+      WT32-ETH01"), and the maintainer put the CC2652P in BSL with the physical buttons.
+      Still **no CC2652P response on `ttyUSB0`** — Z-Stack MT ping silent at every baud, and
+      cc2538-bsl never synced (every entry polarity: sonoff-usb / invert-lines / active-high /
+      plain, 115200–921600). The decider: the **vendor's own ZigStar Multi Tool** flashes the
+      LAN GW's CC2652P **over the network (IP:PORT), never over USB serial** — its README
+      lists the LAN GW under "Network gateways (enter IP:PORT)", separate from "USB sticks".
+      So on the LAN GW the CC2652P is **always behind the ESP32** (BSL/RST on its GPIOs,
+      UART bridged over TCP); the CH340 is the ESP32's port. There is **no direct
+      CH340→CC2652P path**, whatever the DIP switches do. Sniffle needs the CC2652P on a
+      **direct local USB-UART at 2 Mbps** (the SONOFF ZBDongle-P wires CC2652P straight to a
+      CP2102N — no MCU between); the ZigStar can't provide that. **Conclusion: not usable for
+      Sniffle** — set the DIP switches back to LAN (OFF) and power-cycle to restore the
+      gateway.
+      **Two paths that could still use the ZigStar (maintainer's idea, 2026-09-15):**
+      (A) *Sniffle over the ESP32 TCP bridge.* Flashing is not the blocker — the vendor path
+      `cc2538-bsl.py -p socket://IP:6638 -evw sniffle_cc1352p1_cc2652p1.hex` flashes Sniffle
+      onto the CC2652P through the ESP32, no Sniffle change needed. To *run* it, patch
+      `SniffleHW.__init__` to use `serial.serial_for_url('socket://IP:6638')` instead of
+      `Serial(port)` (pyserial supports socket://; ~2 lines). Remaining blockers: the ESP32's
+      bridge UART must run at Sniffle's **2 Mbps** (reconfigure ESPHome `uart: baud_rate:
+      2000000` and reflash the ESP32 — not the nRF), and the ESP32/Ethernet must sustain
+      2 Mbps of connection-following bursts with low enough latency for Sniffle's protocol —
+      **unproven**, could drop packets / miss the CONNECT_IND. A pure-software experiment
+      worth trying (no new parts). (B) *External UART on the exposed CC2652P pins* — the board
+      breaks out all pins; wire a **3.3 V USB-UART** adapter straight to the CC2652P module's
+      TX/RX/GND (BSL entry via the onboard buttons), bypassing BOTH the ESP32 and the CH340.
+      That gives a true direct 2 Mbps serial → unmodified Sniffle, no bottleneck. Needs a
+      cheap USB-UART adapter (~€2) + the module UART pinout from the board schematic. Most
+      reliable revival. Fallback if neither pans out: SONOFF ZBDongle-P (CC2652P direct on a
+      CP2102N).
+      **EXECUTED Approach B (2026-09-15) — Sniffle flashed & running; blocked only by the
+      adapter's baud ceiling.** The maintainer wired an external USB-UART to the CC2652P
+      TX/RX/GND. The chip answered a **Z-Stack MT SYS_PING** (`fe 02 61 01 59 06 3d`) at
+      115200 → the UART reaches the radio directly (ESP32 fully bypassed; the onboard CH340
+      never did). BSL entry: the buttons alone don't reset the CC2652P (its RESET is an ESP32
+      GPIO), so **hold BSL + power-cycle the module + release BSL** enters the ROM bootloader.
+      cc2538-bsl then read the chip (352 KB flash, IEEE `00:12:4B:…` = TI; it mislabels it
+      "CC1350") and **flashed `sniffle_cc1352p1_cc2652p1.hex`, CRC-verified**. Sniffle now
+      runs and streams messages — BUT the host decodes only **garbage** (base64 padding
+      errors). Root cause: the adapter is a **classic CP2102 (max ~1 Mbaud)** and Sniffle's
+      UART is **fixed at 2 Mbps**; the ROM bootloader auto-bauds so flashing worked at ≤1 M
+      and masked the ceiling, but Sniffle's fixed 2 M output the CP2102 can't sample →
+      framing corruption. **Fix = a 2 Mbps-capable USB-UART on the same 3 wires: CH340 (~€1,
+      does 2 M), FTDI FT232 (3 M), or a CP2102*N* (3 M) — NOT a classic CP2102.** Then the
+      free ZigStar path is complete. (Zero-purchase alternative: rebuild Sniffle firmware
+      with the UART `#define` at 1 M — needs the TI SimpleLink SDK + arm-none-eabi toolchain,
+      heavy; a €1 CH340 is far simpler.) Z-Stack was erased by the flash; to restore the
+      gateway's Zigbee, reflash a coordinator hex via the same BSL method.
+    - **Honest capability limit (calibrate before buying):** following reveals the
+      *connection and its endpoints* (phone ↔ device = the pairing relationship) and makes
+      the device observable on-air while connected — but a **bonded device's reconnection is
+      LESC-encrypted (ECDH)**, which Sniffle cannot decrypt even by capturing the pairing.
+      So we get the relationship, addresses (possibly RPA), timing and packet structure — not
+      the GATT payload. For "who is paired with whom" that is still the key win.
+    - free "try before buy" on the **existing nRF52840**: Nordic's **nRF Sniffer for
+      Bluetooth LE** *does* follow a selected device's connection (packets between it and its
+      peer, even encrypted) via a Wireshark extcap — good enough for a feasibility test that
+      we can see the Redmi↔Android link. Trade-offs vs Sniffle: single advertising channel
+      (less reliable at catching the CONNECT_IND, retry the reconnection), Wireshark-bound
+      (harder to integrate than a Python CLI), and it displaces blatann on the one dongle.
+  Host side: `sniff_receiver.py` (Python + PySerial over CDC-ACM), `-m MAC` filter, follows
+  connections by default, PCAP export, `-i IRK` / `-Q` for RPA. **Operational limit:** it can
+  only follow a connection whose *establishment* it observes (needs the CONNECT_IND) — it
+  cannot join an already-running link, so we trigger a reconnection (buds off/on, BT toggle)
+  while sniffing on all 3 advertising channels. RPAs may remain, so identity attribution
+  stays partly open, but the device at least becomes observable.
+- **Classic (BR/EDR)**: much harder — needs **Ubertooth One** (or similar) to recover the
+  piconet LAP/UAP and follow the hop; the nRF52 cannot do BR/EDR at all. The JBL Go 3 case
+  is blocked on hardware we do not have.
+
+### Sniffle integration design (sketch, 2026-08-28 — studied the master python_cli)
+
+Integrate the maintained **Sniffle Python package directly** (don't shell out to
+`sniff_receiver.py`): vendor `python_cli/sniffle/` into the repo (or add as a dep). It is a
+clean library — `sniffle.sniffle_hw.SniffleHW` + `sniffle.packet_decoder`. Python 3.9+
+(our 3.10 is fine); needs **pyserial** (NOT currently installed — new requirement; blatann
+uses its own serial, so this is additive).
+
+- **Third, independent backend.** The TI CC2652P dongle is its own serial device, unrelated
+  to the nRF52/blatann controller and to BlueZ/hci0 — like `scan_classic` wraps bluetoothctl,
+  a new top-level `sniff.py` wraps SniffleHW. Autodetect its port the way `bledev` does.
+- **API path:** `hw = SniffleHW(port)`; `hw.setup_sniffer(mode=SnifferMode.CONN_FOLLOW,
+  targ_mac=<bytes>|targ_irk=<bytes>, hop3=True, rssi_min=…)`; `hw.mark_and_flush()`; then a
+  thread loops `msg = hw.recv_and_decode()`. Decoded types that matter:
+  `ConnectIndMessage` (**the relationship** — InitA=phone ↔ AdvA=device, access address,
+  channel map, hop), `AdvIndMessage`/`ScanRspMessage` (advertising), and `DataMessage` /
+  `LlControlMessage` (the **followed connection's** data-channel traffic → ATT/GATT, i.e.
+  the device's name/services revealed *while it is connected to the phone*).
+- **`SniffleScanner`** implements the `livetable` scanner interface (snapshot / is_scanning /
+  pause / resume / save_csv) so it drops into the existing UI as a new activity, e.g.
+  "BLE connection sniff". Record model: key by observed **connection** — show the two peers
+  (phone ↔ device) and enrich the device row from the followed link (name, services, RPA vs
+  identity). This is the first capability that surfaces a *phone↔device* pairing directly.
+- **Operational workflow (must be in the UI copy):** following needs the `CONNECT_IND`, so
+  start the sniffer then **trigger a reconnection** (device off/on, or toggle BT). For an
+  **RPA** device (the Redmi buds), filter by **IRK** if known (we don't have it) — otherwise
+  run with no MAC filter and catch every `CONNECT_IND`, then filter/attribute after.
+- **select/act:** PCAP export (Sniffle has `sniffle.pcap`), dump the captured GATT, correlate
+  the two peers. Later: `-i IRK` resolving if we ever obtain a device/phone IRK.
+
+**Next decision (open):** acquire a TI CC2652P (SONOFF dongle) and integrate Sniffle
+connection-following into the scan/select/act model (wrap `sniff_receiver.py` like
+`scan_classic` wraps bluetoothctl) as the path to seeing phone-connected BLE devices; decide
+separately whether Classic sniffing (Ubertooth) is worth the hardware. User is willing to buy
+hardware. Until one lands, the goal stays partially open.
 2. **Bond / pairing-relationship enumeration** (heart of the goal; research + new decoder).
    *2026-08-28 — implemented and **live-validated** on a real non-discoverable frame
    (buds bonded to a phone, out of pairing mode: FE2C payload `0000` → correctly decoded
