@@ -127,6 +127,21 @@ def browse_gatt(request: Request, address: str):
     })
 
 
+@router.post("/api/devices/{address}/gatt/bluez", response_class=HTMLResponse)
+def browse_gatt_bluez(request: Request, address: str):
+    """Fallback GATT enumeration over BlueZ (hci0) — completes what the dongle couldn't."""
+    eng = _engine()
+    try:
+        eng.browse_gatt_bluez(address)
+        error = ""
+    except Exception as err:                                    # noqa: BLE001
+        error = str(err)
+    device = eng.get_device(address)
+    return _TEMPLATES.TemplateResponse(request, "_gatt_tree.html", {
+        "request": request, "d": device, "error": error,
+    })
+
+
 # --- JSON API (parity with the MCP read tools) ------------------------------
 @router.get("/api/devices")
 def api_devices(search: str = "", transport: str = "", fast_pair_only: bool = False):

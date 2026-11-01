@@ -28,6 +28,7 @@ import time
 import capabilities
 import client
 import exposure
+import gatt_bluez
 import scan_classic
 import scan_fused
 import scan_le
@@ -219,6 +220,68 @@ class Engine:
         if result.get("device_name"):
             self._store.set_name(address, result["device_name"])
         return result
+
+    def browse_gatt_bluez(self, address: str) -> dict:
+        """Enumerate GATT over the host BlueZ adapter (hci0), independent of the dongle.
+
+        The fallback for services the dongle/blatann could not fully enumerate (vendor
+        services whose characteristics trigger the blatann wedge). Runs anytime — it
+        does its own connect over hci0 — and merges the result into the stored tree,
+        preferring whichever source has more characteristics per service. A fused/classic
+        scan is paused for it (it also uses hci0); a dongle-only scan is left untouched.
+        """
+        address = store_module.normalize_address(address)
+        with self._lock:
+            paused = False
+            if self._scanner is not None and self._kind in ("fused", "classic"):
+                self._scanner.pause()
+                paused = True
+            try:
+                result = gatt_bluez.enumerate(address)
+            finally:
+                if paused:
+                    self._scanner.resume()
+        if result.get("error") and not result.get("gatt"):
+            raise RuntimeError(result["error"])
+        merged = self._merge_gatt(self._store.get_gatt(address), result["gatt"])
+        self._store.save_gatt(address, merged, self._session_id)
+        return {"gatt": merged, "error": result.get("error", ""), "source": "bluez"}
+
+    @staticmethod
+    def _svc_key(uuid: str) -> str:
+        """Normalise a service UUID for cross-source merging (dongle vs BlueZ forms).
+
+        The dongle stores '1800'/full-128, BlueZ '0x1800'/full-128 — reduce both to a
+        bare lowercase hex and collapse a SIG base UUID to its 16-bit form.
+        """
+        u = (uuid or "").lower().replace("0x", "")
+        if u.endswith("-0000-1000-8000-00805f9b34fb") and u.startswith("0000"):
+            return u[4:8]
+        return u
+
+    def _merge_gatt(self, dongle_tree: list[dict], bluez_tree: list[dict]) -> list[dict]:
+        """Union two GATT trees by service, keeping the richer characteristic set.
+
+        Per service, the version with more characteristics wins (so BlueZ fills the
+        vendor services the dongle left empty, while the dongle keeps the standard
+        services whose values it already read). Dongle order first, then BlueZ-only."""
+        out: dict[str, dict] = {}
+        order: list[str] = []
+        for tree in (dongle_tree, bluez_tree):
+            for svc in tree:
+                k = self._svc_key(svc.get("uuid", ""))
+                if k not in out:
+                    out[k] = dict(svc)
+                    order.append(k)
+                    continue
+                cur = out[k]
+                if len(svc.get("characteristics", [])) > len(cur.get("characteristics", [])):
+                    richer = dict(svc)
+                    richer["name"] = svc.get("name") or cur.get("name") or ""
+                    out[k] = richer
+                elif not cur.get("name") and svc.get("name"):
+                    cur["name"] = svc["name"]
+        return [out[k] for k in order]
 
     def _dongle_and_peer(self, address: str):
         """The open BleDevice and the blatann peer address for `address`, or (dev, None)."""

@@ -38,9 +38,18 @@ validated on hardware (target `5A:05:D9:10:6E:DB` = Epson ET-3950 Series printer
   one-shot wasn't captured only because the printer advertises/accepts connections
   intermittently (connect timed out on later attempts — device behaviour, not code).
 
-**Still open / next:** task 1 — a per-device *Enumerate via BlueZ* action (bluetoothctl
-`gatt.list-attributes` over hci0, independent of the dongle) to complete the vendor
-services' characteristics in-place from the warning, no scan restart.
+**Task 1 — BlueZ GATT fallback — DONE, hardware-validated.** New `gatt_bluez.py` enumerates
+GATT over hci0 via `bluetoothctl gatt.list-attributes` (independent of the dongle; a bash
+driver with real sleeps + `printf` feeds the commands — bluetoothctl has no `sleep`, and
+the device must be scanned into the cache first or `connect` reports "not available").
+`engine.browse_gatt_bluez` runs it, merges into the stored tree keeping the richer
+characteristic set per service (dongle keeps standard services *with read values*, BlueZ
+fills the vendor services), and persists. Exposed as an *Enumerate via BlueZ (hci0)* button
+in the "Could not enumerate all GATT" warning. **Validated on the Epson ET-3950:** vendor
+services went 0→10 and 0→3 characteristics, `1800` kept its read values, `gatt_partial`
+cleared. Needs hci0 up (`sudo systemctl start bluetooth && sudo hciconfig hci0 up`).
+Known limit: BlueZ chars carry no props/values (list-attributes omits them) — reading
+values via `gatt.read` is a possible follow-up.
 
 ## Resume here — 2026-11-01, web UI + MCP server + SQLite persistence (built, headless-validated; NOT yet hardware-validated)
 

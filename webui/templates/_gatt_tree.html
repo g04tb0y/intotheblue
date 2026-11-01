@@ -2,11 +2,18 @@
   <p class="error">⚠ {{ error }}</p>
 {% endif %}
 {% if d and d.gatt_partial %}
-  <p class="warn">⚠ Could not enumerate all GATT: {{ d.gatt_incomplete|length }}
-    service(s) reported no characteristics
-    (<code>{{ d.gatt_incomplete|join(', ') }}</code>). blatann's characteristic
-    discovery hit NrfError.invalid_state on these. Try enumerating them over BlueZ
-    (hci0) — <em>coming next</em>.</p>
+  <div class="warn">
+    <p>⚠ Could not enumerate all GATT: {{ d.gatt_incomplete|length }}
+      service(s) reported no characteristics
+      (<code>{{ d.gatt_incomplete|join(', ') }}</code>). blatann's characteristic
+      discovery hit NrfError.invalid_state on these.</p>
+    <form hx-post="/api/devices/{{ d.address }}/gatt/bluez"
+          hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+      <button type="submit">Enumerate via BlueZ (hci0)</button>
+      <span class="muted">connects over the host adapter, independent of the dongle;
+        takes ~15 s</span>
+    </form>
+  </div>
 {% endif %}
 {% if d and d.gatt %}
   {% for svc in d.gatt %}
