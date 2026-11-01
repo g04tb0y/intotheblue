@@ -3,6 +3,154 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-11-01, web UI + MCP server + SQLite persistence (built, headless-validated; NOT yet hardware-validated)
+
+*Added a third front-end over the existing scanners: a FastAPI process serving a web
+UI (Jinja2 + HTMX), a JSON API and an MCP server (FastMCP, streamable HTTP at `/mcp`),
+all backed by a new stdlib-sqlite `store.py`. New code: `store.py`, `webui/`
+(`engine.py`, `app.py`, `api.py`, `mcp_server.py`, templates, static + vendored htmx).
+It is an **in-repo package, not installed** (like `bledev/`) — no `python -m`, no install.
+Single entry point `intotheblue.py --cli | --webui` (new). Modified: `cli.py` (new `webui`
+activity + direct `python cli.py <activity>` launch), `requirements.txt`
+(fastapi/uvicorn/jinja2/mcp<2), `.gitignore` (`db/`), `CLAUDE.md`.*
+
+**What was asked** (maintainer, in plan): a web interface (at least a scans page and a
+page to navigate all device info + GATT), an MCP server, and a lightweight DB to persist
+scans/info. Plan decisions: the **web server owns the hardware** (CLI⇄web mutually
+exclusive), **Jinja2 + HTMX** (no build step), **MCP mounted HTTP** in the same process
+(shares the engine/DB, no dongle contention).
+
+**Design.** `webui/engine.py` is the single hardware owner — one active scanner, one
+lock serialising every dongle op, a background flush thread persisting `snapshot()` to
+`store`, and `browse_gatt()` that **pauses the scan and connects on the same open
+`BleDevice`** (the `_scan_interact_loop` invariant), reusing `client.*`/`capabilities`/
+`exposure`. The web live table reuses each scanner's `COLUMNS` cell fns → identical to
+the CLI. `store.py` imports no blatann (read side + tests load without hardware); upsert
+is latest-non-empty-wins with the `_merge_fast_pair` precedence (decoded Model ID beats
+`"Yes"`); `row_to_record()` lets the passive analysers run on DB rows unchanged.
+
+**Validated headless (no dongle):** store round-trip + merge precedence; uvicorn served
+`/` (scans), `/devices` (list + filters), `/devices/{addr}` (info + exposure + GATT),
+the HTMX partials, and the JSON API against a seeded DB; a real MCP client over
+streamable HTTP listed 9 tools and `list_devices`/`exposure_report`/`scan_status`
+returned correct data. **Gotchas resolved:** Starlette 1.7 `TemplateResponse(request,
+name, context)` signature (name-first crashes with "unhashable dict"); FastMCP lifespan
+must be driven by the host (`session_manager.run()` in the FastAPI lifespan); FastAPI
+0.162 ships OpenTelemetry instrumentation (inert without an OTLP endpoint, but disabled
+explicitly in `webui/__init__` for the offline posture).
+
+**NOT yet validated on hardware** — the real checkpoint (maintainer): run a BLE/fused/
+Classic scan from the web, watch the live table, open a device, **Browse GATT (connect)**,
+confirm GATT + exposure render and **persist** across a restart. Do not commit until that
+passes (Rules of conduct). Also to decide on hardware: whether the 1 s HTMX table poll +
+the 2 s flush interval are comfortable during a live scan.
+
+## Resume here — 2026-10-31, restoring the ZigStar Zigbee coordinator (PAUSED, host→chip TX still blocked)
+
+*Trying to put a Z-Stack coordinator back on the ZigStar CC2652P (Sniffle erased it).
+Full staged tooling + firmware + diagnosis + next steps in
+`.scratch/zigstar-coordinator-restore/RESUME.md`. Blocked on the same host→chip TX issue
+(adapter TXD → DIO12): loopback proves the adapter TX is fine and the chip enters BSL
+(red LED stops flickering), but `cc2538-bsl` never syncs — prime suspects: ESP32
+contention on DIO12 (power the module from the adapter only) or the TXD wire/pad not on
+DIO12. Fallback: JTAG/SWD. Firmware = Koenkk `CC1352P2_CC2652P_launchpad_coordinator_20250321.hex`
+(launchpad, for RF-BM-2652P2).*
+
+## Resume here — 2026-10-30, Sonoff ZBDongle-P as the clean Sniffle host (bypasses the ZigStar TX block)
+
+*The ZigStar bring-up is stuck on the host→CC2652P TX line (see the 2026-10-15 section
+below) — a hardware wiring problem on an intact board we refuse to modify. Decision: get
+Sniffle running on a **Sonoff ZBDongle-P** instead, which needs no soldering and no
+external FTDI. Same radio (CC2652P, Sniffle-supported); its onboard CP210x bridge is
+wired straight to the CC2652P UART and BSL entry is automatic over DTR/RTS.*
+
+**Why it sidesteps everything that blocked the ZigStar**
+- Radio reachable directly over USB (on the ZigStar the CH340 reached the ESP32, not the
+  radio, forcing the external-UART Approach B — which is where TX died).
+- Automatic BSL: `cc2538-bsl --bootloader-sonoff-usb` enters the bootloader by toggling
+  DTR/RTS; no hold-BSL + power-cycle, no manual wiring.
+- 2 Mbps bridge: recent units carry a **CP2102N** (handles Sniffle's fixed 2 Mbps). Some
+  2022 units carry a plain **CP2102** (~1 Mbaud cap) → those need the reduced-rate build.
+
+**The one real decision: firmware variant (follows the bridge chip)**
+- **CP2102N** → `sniffle_cc1352p1_cc2652p1.hex` (full 2 Mbps).
+- **plain CP2102** → `sniffle_cc1352p1_cc2652p1_1M.hex` (921600).
+- Check first: `lsusb -v -d 10c4: | grep -i iProduct` (or the `/dev/serial/by-id/` name).
+  Flashing the wrong variant → garbled decode or, worst case, a locked bootloader
+  (recovery via JTAG/SWD). This is the brick risk.
+
+**Flashing procedure**
+1. Tools (once): `git clone https://github.com/JelmerT/cc2538-bsl` and
+   `pip install pyserial intelhex`. Firmware: Sniffle releases page
+   (`github.com/nccgroup/Sniffle` → Releases), grab the `.hex` for the variant above.
+2. Plug the dongle in; find the port via `ls -l /dev/serial/by-id/` (prefer the stable
+   by-id path over `/dev/ttyUSB0`).
+3. Flash (erase/write/verify, auto-BSL):
+   ```
+   python3 cc2538-bsl.py -p <PORT> --bootloader-sonoff-usb -ewv sniffle_cc1352p1_cc2652p1.hex
+   ```
+4. Known post-flash bug (cc2538-bsl, as of 2025-01-10): it may fail to **reset** the
+   CC2652P after a good write. If erase/write/verify lines look fine, the flash is fine —
+   just **unplug/replug**. Kismet also notes removing `python3-magic` can help.
+5. Verify Sniffle answers: `python3 python_cli/sniff_receiver.py -s <PORT>` → should print
+   BLE packets. Confirmed working on the ZBDongle-P per Kismet's Sniffle datasource docs.
+
+**Helper:** `.scratch/sonoff-sniffle-flash/flash_sonoff_sniffle.sh` wraps steps 1b–4:
+autodetects port + bridge chip, picks the matching `.hex`, prints the plan, confirms, runs
+cc2538-bsl, and flags the reset bug. `--dry-run` shows the detected plan without flashing;
+`--variant full|1m` forces the choice if autodetect can't tell. See the folder's README.
+
+**Status: NOT YET RUN on real hardware** — dongle to be flashed. Once it sniffs cleanly,
+the next step is unchanged from the ZigStar plan: wrap `SniffleHW` as a `livetable`
+scanner (`SniffleScanner`), slotting into the existing scan→select→act model.
+
+**Sources:** NCC Group Sniffle README (`github.com/nccgroup/Sniffle`); Kismet "Sniffle BLE
+(Sonoff ZBDongle-P)" datasource docs (kismetwireless.net).
+
+## Resume here — 2026-10-15, FTDI adapter wired to CC2652P: RX works, TX blocked
+
+*FTDI adapter (DSD TECH SH-U09C5, FT232RNL, 3 Mbps max) arrived and was wired to the
+CC2652P module (RF-BM-2652P2) on the ZigStar LAN Gateway board. Sniffle firmware is
+already flashed (from the earlier CP2102 session). RX direction is proven; TX direction
+does not work — the FTDI's output signal does not reach DIO12.*
+
+**What works:**
+- FTDI detected as `/dev/ttyUSB0`, loopback verified at 115200 / 921600 / 2000000 baud
+- RX (CC2652P → host): clean base64-decoded BLE advertising at 2 Mbps, zero decode errors
+- FTDI voltage confirmed 3.3V (VCC selector on the adapter)
+
+**What does NOT work:**
+- TX (host → CC2652P): all commands ignored — 0/10 marker echoes, reset (0x17) has no
+  effect, silence (impossible AA) has no effect, 100 rapid markers → 0 responses, TX
+  flood had no effect on RX stream rate
+- Break test (pyserial `break_condition=True`, holds TXD at 0V): the pad on the CC2652P
+  where TXD is wired reads **3.3V consistently**, with rare brief drops to 2.4V — the
+  FTDI output is not reaching DIO12
+
+**Eliminated causes:**
+- ESP32 contention: removed the WT32-ETH01 module entirely — break test result unchanged
+- CH340C contention: ZigStar USB disconnected — no change
+- Pin assignment: confirmed DIO12 (RX) / DIO13 (TX) for both the BSL and the Sniffle
+  firmware (CC1352P1_LAUNCHXL XDS110UART component)
+- FTDI hardware: loopback at 2M works; the adapter transmits fine
+- Schematic pull-ups: no pull-up resistors on TX_Z/RX_Z in the ZigStar schematic (R2/R3
+  are LED current-limiting resistors)
+- DTR/RTS: tested all 4 combinations, no effect
+
+**Causa non identificata.** Ipotesi non verificate:
+- Contatto fisico scarso del filo TXD sul pad DIO12
+- Filo TXD sul pad sbagliato (DIO12 e DIO13 sono pad adiacenti sul modulo)
+- Problema del driver pyserial/FT232R con `break_condition` su Linux (il break test
+  potrebbe non essere affidabile come diagnostica)
+- Problema di integrità del segnale a 2 Mbps specifico del percorso TX (non testato a
+  baud inferiori perché Sniffle è fisso a 2M)
+
+**To resume:**
+1. Il problema è aperto — il TX non funziona e la causa è ignota.
+2. Se/quando TX funziona → build the `SniffleScanner` (livetable interface).
+3. Vincolo: NON modificare/compromettere la scheda ZigStar (no dissaldature, no taglio
+   piste). Soluzioni con la scheda intatta (meno il WT32-ETH01 rimovibile).
+
 ## Resume here — 2026-08-28, disclosure validated against a real Fast Pair target: NEGATIVE
 
 *Executed the full test plan against a real **Redmi Buds 6 Play** (see the standalone
@@ -552,6 +700,17 @@ exactly the thing this whole approach cannot observe.
       with the UART `#define` at 1 M — needs the TI SimpleLink SDK + arm-none-eabi toolchain,
       heavy; a €1 CH340 is far simpler.) Z-Stack was erased by the flash; to restore the
       gateway's Zigbee, reflash a coordinator hex via the same BSL method.
+      **Adapter ordered (2026-09-15):** DSD TECH **SH-U09C5** (FTDI **FT232RNL**, 3 Mbps max
+      — 2 M with headroom, cleaner than CH340; verified from the FTDI datasheet). Chosen over
+      the SH-U09C2 because it breaks out **DTR/RTS** (and RESET), enabling **automatic BSL
+      entry** — no more manual hold-BSL + power-cycle. **MUST set VCC/TTL to 3.3 V** (the
+      CC2652P is 3.3 V; 5 V damages it). Wiring: data = adapter TXD→CC2652P RX, RXD→TX,
+      GND→GND; auto-BSL = DTR→CC2652P **RESET**, RTS→CC2652P **BSL** (then cc2538-bsl
+      `--bootloader-sonoff-usb`/right polarity auto-enters BSL; also makes restoring Z-Stack
+      easy). Can power the module from the adapter's 3.3 V VCC (250 mA, ample). TODO when
+      wiring: get the E72 module RESET and BSL(-backdoor DIO) pins from the ZigStar schematic.
+      Sniffle is already flashed, so once wired at 3.3 V it should decode clean at 2 M — then
+      build the `SniffleScanner`.
     - **Honest capability limit (calibrate before buying):** following reveals the
       *connection and its endpoints* (phone ↔ device = the pairing relationship) and makes
       the device observable on-air while connected — but a **bonded device's reconnection is

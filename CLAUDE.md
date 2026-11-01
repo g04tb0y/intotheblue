@@ -34,8 +34,9 @@ Prefer NOTES.md over ad-hoc memory for anything that should survive across sessi
 uv venv --python 3.10 .venv310
 .venv310/bin/python -m pip install -r requirements.txt
 
-# Main entry point — interactive menu of activities
-.venv310/bin/python cli.py
+# Main entry point — one bench, two front-ends (mutually exclusive)
+.venv310/bin/python intotheblue.py --cli                       # interactive curses menu (default)
+.venv310/bin/python intotheblue.py --webui --port 8000         # web UI + MCP server
 
 # Standalone tools (each takes --port; BLE tools autodetect the dongle)
 .venv310/bin/python scan_live.py          # live BLE scan table
@@ -43,7 +44,17 @@ uv venv --python 3.10 .venv310
 .venv310/bin/python scan_classic.py       # live Classic scan (needs hci0 up)
 .venv310/bin/python client.py --address AA:BB:CC:DD:EE:FF   # GATT explore
 .venv310/bin/python emulate.py --name TestDevice           # act as peripheral
+
 ```
+
+`intotheblue.py` is the single entry point (`--cli` / `--webui`); `cli.py` still works on
+its own and takes a direct activity, e.g. `python cli.py webui`. `webui/` is an **in-repo
+package, not an installed one** (like `bledev/`) — nothing is `pip install`ed but the
+requirements; everything loads from the working directory, never as a standalone
+`python -m` package.
+
+**CLI and web are mutually exclusive** — both open the same dongle, and a second open
+fails (`rpc_h5_transport_state`). Run the curses CLI **or** the web server, never both.
 
 There is **no automated test suite**. Verification is done by running against real hardware. Two things to know:
 - Curses UIs are validated by driving them through a **pseudo-terminal** (`pty`), sending keys and asserting on output / generated CSV — the harnesses aren't committed; recreate them under the scratchpad when needed. Application-cursor-mode arrows are `\x1bOB`/`\x1bOA` (not `\x1b[B`).
@@ -60,6 +71,10 @@ There is **no automated test suite**. Verification is done by running against re
 **Identification & decoding.** `scan_live.DeviceRecord.update()` is where advertising is turned into identity: vendor/protocol from manufacturer data and service-data UUIDs (`_decode_protocol`), Fast Pair via service UUID `0xFE2C` (`_fast_pair`), address type, connectable flag. `client.py` reuses blatann's `UUID_DESCRIPTION_MAP` for GATT **service/characteristic common names** and `_interpret()` to decode well-known values (Battery %, Appearance, Tx Power, PnP ID, Heart Rate, DIS strings). `scan_classic.py` decodes the **Class of Device** and enriches records via `bluetoothctl info` (CoD/Icon are not emitted in the scan event stream, only in `info`).
 
 **Passive vs active boundary.** `exposure.py` is a **passive, read-only** classifier: it only interprets advertising already collected and sends no packets. Active/intrusive test primitives (e.g. L2CAP flooding, which lives in dedicated external tooling written in C for the required socket throughput) are **not** implemented in this repo. Keep passive analysis (`exposure.py`, record enrichment) strictly non-transmitting, and gate anything that connects/writes behind an explicit user action in the interaction menu.
+
+**Persistence — `store.py`.** A stdlib-`sqlite3` store (the deliberately *lightweight* DB; no new native dep, unlike blatann) at `db/intotheblue.db` (git-ignored; override with `$INTOTHEBLUE_DB`, tests use `":memory:"`). It imports **no blatann**, so the read side and headless tests load without hardware. Any backend's record (`DeviceRecord`/`LeRecord`/`ClassicRecord`) upserts into one `device` row by normalised address (drop blatann's `",r"` suffix, upper-case); the merge is **latest-non-empty-wins** and carries the same Fast Pair precedence as `scan_fused._merge_fast_pair` (a decoded Model ID beats a bare `"Yes"`). `sighting` keeps the per-scan RSSI history; `gatt_service`/`gatt_characteristic` store a browsed GATT tree (latest discovery replaces the old). `row_to_record()` rebuilds a record-like object so the passive analysers (`exposure`, `bond`, `scan_fused.target_note`) are reused unchanged on the DB read side.
+
+**Web + MCP — `webui/`.** A **third front-end over the same scanners**, not a parallel stack (roadmap: new capabilities slot into scan/select/act). One FastAPI process = web UI (Jinja2 + HTMX, no build step; HTMX vendored under `static/vendor/` for offline use) + JSON API + an MCP server (FastMCP, streamable HTTP, mounted at `/mcp`). `engine.py` is the **single hardware owner**: it holds at most one active scanner, serialises every dongle op behind one lock, persists `snapshot()` to `store` on a background flush thread, and runs `browse_gatt()` by **pausing the scan and connecting on the same open `BleDevice`** (the `_scan_interact_loop` invariant), reusing `client.*`/`capabilities`/`exposure`. The web table reuses each scanner's `COLUMNS` cell functions, so it matches the CLI exactly. **Lifespan gotcha:** a mounted MCP sub-app's own lifespan doesn't run, so `app.py`'s FastAPI lifespan enters `mcp.session_manager.run()` itself (and stops any scan on shutdown). The MCP tools are thin wrappers over `engine` + `store`; read tools are passive, `scan_start`/`scan_stop`/`browse_gatt` drive the radio (said so in each docstring). OpenTelemetry is disabled in `webui/__init__.py` before FastAPI imports, keeping the bench non-phoning-home.
 
 
 
@@ -107,9 +122,10 @@ There is **no automated test suite**. Verification is done by running against re
 
 ## Conventions
 
-- Reuse the shared abstractions rather than duplicating: new scan surfaces implement the `livetable` scanner interface; new per-device actions are an entry in the relevant `_device_action` list plus a branch in the `_interact_*` handler.
-- CSV output goes to `csv/` (git-ignored); logs and the venv are git-ignored too.
+- Reuse the shared abstractions rather than duplicating: new scan surfaces implement the `livetable` scanner interface; new per-device actions are an entry in the relevant `_device_action` list plus a branch in the `_interact_*` handler. Web/MCP surfaces are added as `engine`/`store` methods + a route/tool, never as a second copy of scan logic.
+- CSV output goes to `csv/` (git-ignored); the SQLite DB (`db/`), logs and the venv are git-ignored too.
 - Commit messages in English. The working branch is `devel`; `main` is the base.
+- **Documentation — follow Anthropic's best practices, matching the code's existing style.** Every module opens with a docstring stating its *purpose* **and the design rationale / the "why"** (the non-obvious decision, the hardware quirk, the failure it avoids), not just what it does. Public functions/classes get a concise docstring and full type hints; comments explain protocol details and non-obvious choices rather than restating the code. Keep docstrings, `CLAUDE.md` and `NOTES.md` current **in the same change** as the code they describe — stale docs are treated as a defect. New web/MCP/store code must meet this bar from the start.
 
 ## Rules of conduct
 

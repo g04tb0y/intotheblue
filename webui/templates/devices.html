@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Devices · intotheblue{% endblock %}
+{% block content %}
+<h1>Devices <span class="muted">({{ devices|length }})</span></h1>
+<p class="muted">Every device persisted across scans. Click one to see its info, passive
+exposure and GATT.</p>
+
+<form method="get" action="/devices" class="filters">
+  <input type="text" name="search" value="{{ search }}" placeholder="name / address / vendor">
+  <select name="transport">
+    <option value="">any transport</option>
+    {% for key, label in kinds.items() %}
+      <option value="{{ key }}" {% if transport == key %}selected{% endif %}>{{ key }}</option>
+    {% endfor %}
+    <option value="le" {% if transport == 'le' %}selected{% endif %}>le</option>
+  </select>
+  <label><input type="checkbox" name="fast_pair_only" value="true"
+    {% if fast_pair_only %}checked{% endif %}> Fast Pair only</label>
+  <button type="submit">Filter</button>
+</form>
+
+<table class="grid">
+  <thead>
+    <tr>
+      <th>Address</th><th>Name</th><th>Transport</th><th>Addr</th>
+      <th>Vendor / Mfr</th><th>Type</th><th>FastPair</th><th>Target</th>
+      <th>Conn</th><th>RSSI</th><th>Seen</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for d in devices %}
+      <tr onclick="window.location='/devices/{{ d.address }}'" class="clickable">
+        <td>{{ d.address }}</td>
+        <td>{{ d.name or '' }}</td>
+        <td>{{ d.transport or '' }}</td>
+        <td>{{ d.addr_type or '?' }}</td>
+        <td>{{ d.vendor_oui or d.manufacturer or '' }}</td>
+        <td>{{ d.protocol or '' }}</td>
+        <td>{{ d.fast_pair or '-' }}</td>
+        <td>{% if d.target %}<span class="badge target">{{ d.target }}</span>{% endif %}</td>
+        <td>{% if d.connectable == 1 %}Yes{% elif d.connectable == 0 %}no{% else %}?{% endif %}</td>
+        <td>{{ d.rssi or '' }}</td>
+        <td class="muted">{{ d.last_seen|int }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="11" class="muted">No devices yet — run a scan.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

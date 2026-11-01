@@ -1,0 +1,23 @@
+<div id="controls" class="controls">
+  {% if status.scanning %}
+    <span class="badge scanning">SCANNING · {{ status.kind }}</span>
+    <span class="muted">{{ status.devices }} devices · session #{{ status.session_id }}</span>
+    <form hx-post="/api/scan/stop" hx-target="#controls" hx-swap="outerHTML" style="display:inline">
+      <button type="submit">Stop</button>
+    </form>
+    <button hx-post="/api/scan/export" hx-swap="none">Export CSV</button>
+  {% else %}
+    <span class="badge idle">IDLE</span>
+    <form hx-post="/api/scan/start" hx-target="#controls" hx-swap="outerHTML" style="display:inline">
+      <select name="kind">
+        {% for key, label in kinds.items() %}
+          <option value="{{ key }}">{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit">Start scan</button>
+    </form>
+  {% endif %}
+  {% if status.last_error %}
+    <span class="error">⚠ {{ status.last_error }}</span>
+  {% endif %}
+</div>

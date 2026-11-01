@@ -3,3 +3,10 @@
 blatann==0.6.0
 PyYAML==6.0.3
 # pc-ble-driver-py==0.17.0 is installed automatically as a blatann dependency.
+
+# Web UI + MCP server (webapp/). All support Python 3.10. SQLite is stdlib (store.py).
+# mcp is pinned < 2: the v1 line provides mcp.server.fastmcp.FastMCP used by webapp.
+fastapi
+uvicorn[standard]
+jinja2
+mcp>=1.12,<2

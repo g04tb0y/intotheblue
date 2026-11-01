@@ -1,0 +1,38 @@
+:root {
+  --bg: #0b1220; --panel: #121c2e; --fg: #e6edf3; --muted: #8b98a9;
+  --line: #233; --accent: #4aa3ff; --target: #d98a00; --scan: #1f9d55; --err: #e05252;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg);
+  font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+header { display: flex; align-items: center; gap: 1.5rem; padding: .6rem 1rem;
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { font-weight: 700; color: var(--accent); letter-spacing: .5px; }
+nav a { color: var(--fg); text-decoration: none; margin-right: 1rem; }
+nav a:hover { color: var(--accent); }
+main { padding: 1rem 1.25rem; max-width: 1200px; }
+h1 { font-size: 1.3rem; } h2 { font-size: 1.05rem; margin-top: 1.5rem; }
+.muted { color: var(--muted); }
+.error { color: var(--err); }
+.controls { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+  background: var(--panel); padding: .6rem .8rem; border: 1px solid var(--line); border-radius: 6px; }
+.filters { display: flex; gap: .6rem; align-items: center; margin: .75rem 0; flex-wrap: wrap; }
+button, select, input[type=text] { font: inherit; color: var(--fg); background: #1b2740;
+  border: 1px solid var(--line); border-radius: 5px; padding: .35rem .6rem; }
+button { cursor: pointer; } button:hover { border-color: var(--accent); }
+.badge { padding: .1rem .45rem; border-radius: 4px; font-size: .78rem; font-weight: 600; }
+.badge.scanning { background: var(--scan); color: #fff; }
+.badge.idle { background: #33415a; color: var(--fg); }
+.badge.target { background: var(--target); color: #000; }
+table.grid { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+table.grid th, table.grid td { border-bottom: 1px solid var(--line); padding: .3rem .5rem;
+  text-align: left; white-space: nowrap; font-variant-numeric: tabular-nums; }
+table.grid th { color: var(--muted); font-weight: 600; }
+tr.clickable { cursor: pointer; } tr.clickable:hover td { background: #17243c; }
+table.kv th { text-align: left; color: var(--muted); padding: .25rem .75rem .25rem 0; vertical-align: top; width: 160px; }
+table.kv td { padding: .25rem 0; vertical-align: top; }
+.uuids { columns: 2; list-style: none; padding: 0; } .uuids li { font-family: monospace; }
+details.gatt-svc { margin: .4rem 0; border: 1px solid var(--line); border-radius: 6px; padding: .3rem .6rem; }
+details.gatt-svc summary { cursor: pointer; font-family: monospace; }
+code { background: #0f1830; padding: .05rem .3rem; border-radius: 3px; }
+section { margin-bottom: 1rem; }

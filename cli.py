@@ -251,6 +251,20 @@ def _char_menu_factory(char, values, idx):
     return open_char
 
 
+def activity_web() -> None:
+    """Launch the web UI + MCP server (owns the dongle for its whole lifetime).
+
+    Mutually exclusive with the other activities: only one process may open the
+    dongle, so this blocks until you stop the server (Ctrl-C).
+    """
+    host = _prompt("Bind host", "127.0.0.1")
+    port = _prompt_int("Port", 8000)
+    print(f"\nStarting web+MCP on http://{host}:{port}  (MCP at /mcp). Ctrl-C to stop.")
+    print("This owns the dongle — do not run the scan activities meanwhile.")
+    import uvicorn  # lazy: avoids importing FastAPI for the other activities
+    uvicorn.run("webui.app:app", host=host, port=port)
+
+
 def activity_classic() -> None:
     """Live Bluetooth Classic (BR/EDR) scan via the host adapter."""
     print()
@@ -400,6 +414,7 @@ ACTIVITIES: dict[str, tuple[str, callable]] = {
     "classic": ("Live Bluetooth Classic scan (BR/EDR) — host adapter", activity_classic),
     "le_bluez": ("Live BLE scan — fused dongle+BlueZ (identity disclosure)",
                  activity_le_bluez),
+    "webui": ("Web UI + MCP server (persists scans/GATT; owns the dongle)", activity_web),
 }
 
 
@@ -415,7 +430,24 @@ def _print_menu() -> list[str]:
     return keys
 
 
+def _run_activity(key: str) -> None:
+    _, handler = ACTIVITIES[key]
+    try:
+        handler()
+    except KeyboardInterrupt:
+        print("\n  Activity interrupted.")
+
+
 def main() -> None:
+    # Allow launching one activity directly, e.g. `python cli.py webui`, so the web
+    # UI is a startup option of intotheblue rather than a separate package to invoke.
+    if len(sys.argv) > 1:
+        key = sys.argv[1].lower()
+        if key in ACTIVITIES:
+            _run_activity(key)
+            return
+        print(f"  Unknown activity: '{key}'. Known: {', '.join(ACTIVITIES)}")
+        return
     while True:
         keys = _print_menu()
         choice = _prompt("Choice").lower()
@@ -437,11 +469,7 @@ def main() -> None:
             print(f"  Invalid choice: '{choice}'")
             continue
 
-        _, handler = ACTIVITIES[selected]
-        try:
-            handler()
-        except KeyboardInterrupt:
-            print("\n  Activity interrupted.")
+        _run_activity(selected)
 
 
 if __name__ == "__main__":

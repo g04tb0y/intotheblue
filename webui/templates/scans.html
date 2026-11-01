@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Scans · intotheblue{% endblock %}
+{% block content %}
+<h1>Live scan</h1>
+<p class="muted">Start a backend and watch devices appear. Rows are persisted as they
+are seen; click a row to open its detail. This process owns the dongle.</p>
+
+{% include "_controls.html" %}
+
+<div id="scan-table"
+     hx-get="/api/scan/table"
+     hx-trigger="load, every 1s"
+     hx-swap="innerHTML">
+  <p class="muted">No scan running.</p>
+</div>
+{% endblock %}

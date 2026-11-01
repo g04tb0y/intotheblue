@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}{{ d.address }} · intotheblue{% endblock %}
+{% block content %}
+<p><a href="/devices">&larr; Devices</a></p>
+<h1>{{ d.name or '(no name)' }} <span class="muted">{{ d.address }}</span>
+  {% if d.target %}<span class="badge target">{{ d.target }}</span>{% endif %}
+</h1>
+
+<section>
+  <h2>Info</h2>
+  <table class="kv">
+    <tr><th>Transport</th><td>{{ d.transport or '' }}</td></tr>
+    <tr><th>Address type</th><td>{{ d.addr_type or '?' }}</td></tr>
+    <tr><th>Connectable</th><td>{% if d.connectable == 1 %}yes{% elif d.connectable == 0 %}no{% else %}unknown{% endif %}</td></tr>
+    <tr><th>Manufacturer</th><td>{{ d.manufacturer or '' }}</td></tr>
+    <tr><th>Vendor (OUI)</th><td>{{ d.vendor_oui or '' }}</td></tr>
+    <tr><th>Protocol / type</th><td>{{ d.protocol or '' }}</td></tr>
+    <tr><th>Fast Pair</th><td>{{ d.fast_pair or '-' }}</td></tr>
+    <tr><th>Tx Power</th><td>{% if d.tx_power is not none %}{{ d.tx_power }} dBm{% else %}-{% endif %}</td></tr>
+    <tr><th>Last RSSI</th><td>{{ d.rssi or '' }}</td></tr>
+    {% if d.cod_label %}<tr><th>Class of Device</th><td>{{ d.cod_label }} ({{ d.icon }})</td></tr>{% endif %}
+    <tr><th>Sightings</th><td>{{ d.history|length }}</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>Advertised services</h2>
+  {% if d.advertised_services %}
+    <ul class="uuids">
+      {% for s in d.advertised_services %}<li>{{ s.uuid }}{% if s.name %} — {{ s.name }}{% endif %}</li>{% endfor %}
+    </ul>
+  {% else %}<p class="muted">none recorded</p>{% endif %}
+</section>
+
+<section>
+  <h2>Passive exposure</h2>
+  <table class="kv">
+    {% for label, value, note in d.exposure %}
+      <tr><th>{{ label }}</th><td>{{ value }}{% if note %}<br><span class="muted">{{ note }}</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section>
+  <h2>GATT</h2>
+  <div id="gatt">
+    {% include "_gatt_tree.html" %}
+  </div>
+  {% if can_browse %}
+    <form hx-post="/api/devices/{{ d.address }}/gatt" hx-target="#gatt" hx-swap="innerHTML">
+      <button type="submit">Browse GATT (connect)</button>
+      <span class="muted">ACTIVE: opens an LE connection and reads readable characteristics.</span>
+    </form>
+  {% else %}
+    <p class="muted">To browse GATT, start a <strong>ble</strong> or <strong>fused</strong> scan
+      and open this device while it is in range.</p>
+  {% endif %}
+</section>
+{% endblock %}

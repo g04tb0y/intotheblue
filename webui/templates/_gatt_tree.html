@@ -1,0 +1,28 @@
+{% if error is defined and error %}
+  <p class="error">⚠ {{ error }}</p>
+{% endif %}
+{% if d and d.gatt %}
+  {% for svc in d.gatt %}
+    <details open class="gatt-svc">
+      <summary>{{ svc.uuid }}{% if svc.name %} — {{ svc.name }}{% endif %}</summary>
+      <table class="grid">
+        <thead><tr><th>UUID</th><th>Name</th><th>Props</th><th>Value</th></tr></thead>
+        <tbody>
+          {% for ch in svc.characteristics %}
+            <tr>
+              <td>{{ ch.uuid }}</td>
+              <td>{{ ch.name or '' }}</td>
+              <td>{{ ch.props or '' }}</td>
+              <td>
+                {% if ch.value_hex %}<code>{{ ch.value_hex }}</code>{% endif %}
+                {% if ch.value_interp %}<br><span class="muted">→ {{ ch.value_interp }}</span>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+  {% endfor %}
+{% else %}
+  <p class="muted">No GATT discovered yet.</p>
+{% endif %}

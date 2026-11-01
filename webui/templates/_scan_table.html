@@ -1,0 +1,20 @@
+{% if not status.scanning and not rows %}
+  <p class="muted">No scan running.</p>
+{% else %}
+  <table class="grid">
+    <thead>
+      <tr>
+        {% for h in columns %}<th>{{ h }}</th>{% endfor %}
+        <th>Target</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+        <tr onclick="window.location='/devices/{{ row.address }}'" class="clickable">
+          {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
+          <td>{% if row.target %}<span class="badge target">{{ row.target }}</span>{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endif %}

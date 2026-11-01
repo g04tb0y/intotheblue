@@ -6,6 +6,9 @@
 csv/
 *.log
 
+# SQLite persistence (ricreabile; scansioni/GATT salvati dal web/MCP)
+db/
+
 # Cache Python
 __pycache__/
 *.pyc
