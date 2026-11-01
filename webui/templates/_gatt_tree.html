@@ -1,6 +1,13 @@
 {% if error is defined and error %}
   <p class="error">⚠ {{ error }}</p>
 {% endif %}
+{% if d and d.gatt_partial %}
+  <p class="warn">⚠ Could not enumerate all GATT: {{ d.gatt_incomplete|length }}
+    service(s) reported no characteristics
+    (<code>{{ d.gatt_incomplete|join(', ') }}</code>). blatann's characteristic
+    discovery hit NrfError.invalid_state on these. Try enumerating them over BlueZ
+    (hci0) — <em>coming next</em>.</p>
+{% endif %}
 {% if d and d.gatt %}
   {% for svc in d.gatt %}
     <details open class="gatt-svc">

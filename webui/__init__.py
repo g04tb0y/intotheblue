@@ -14,3 +14,12 @@ inert unless an OTLP endpoint is configured, but we disable it explicitly here,
 import os as _os
 
 _os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+
+# Apply the contained blatann GATT-discovery workaround (see blatann_patch) before
+# any discovery runs. Best-effort: never fail package import over it.
+try:
+    from . import blatann_patch as _blatann_patch
+
+    _blatann_patch.apply()
+except Exception:  # noqa: BLE001
+    pass

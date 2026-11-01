@@ -216,6 +216,8 @@ class Engine:
             finally:
                 self._scanner.resume()
         self._store.save_gatt(address, result["gatt"], self._session_id)
+        if result.get("device_name"):
+            self._store.set_name(address, result["device_name"])
         return result
 
     def _dongle_and_peer(self, address: str):
@@ -231,13 +233,91 @@ class Engine:
                 return dongle.ble_device, rec.peer
         return dongle.ble_device, None
 
+    @staticmethod
+    def _is_transport_error(err: Exception) -> bool:
+        """True for a wedged nRF52 serial-RPC transport (recoverable only by reopen).
+
+        Matches any `NrfError.rpc_*` (rpc_no_response, rpc_invalid_state,
+        rpc_h5_transport_state, ...) — the serial RPC layer to the connectivity chip.
+        Deliberately distinct from a bare `NrfError.invalid_state` (no `rpc_` prefix),
+        which is blatann's *characteristic-discovery* failure, not a transport wedge.
+        """
+        m = str(err).lower()
+        return "nrferror.rpc_" in m or "rpc_h5_transport_state" in m
+
+    @staticmethod
+    def _release_stale_connections(ble_device) -> None:
+        """Disconnect any peripheral blatann still holds open.
+
+        We only ever hold one connection at a time, but if a previous browse did not
+        tear down cleanly (e.g. the discovery wedge left the link up), blatann's
+        `connect()` refuses the next attempt with 'Already connected'. Clearing the
+        registry here makes Browse GATT repeatable instead of one-shot.
+        """
+        peripherals = dict(getattr(ble_device, "connected_peripherals", {}) or {})
+        for periph in peripherals.values():
+            try:
+                periph.disconnect().wait(5, exception_on_timeout=False)
+            except Exception:                                   # noqa: BLE001
+                pass
+
+    def _connect(self, ble_device, peer, attempts: int = 2):
+        """Connect + discover, retrying once on a transient transport hiccup.
+
+        `ble_gap_connect` can fail with `NrfError.rpc_no_response` when the dongle's
+        serial RPC link glitches (often right after a dropped connection). A short
+        retry clears a one-off; a truly wedged transport needs the dongle reopened,
+        which only Stop→Start can do (we never close/reopen mid-session), so we say so.
+        """
+        # Release any connection a previous browse left dangling, else blatann raises
+        # 'Already connected' and every subsequent Browse GATT fails.
+        self._release_stale_connections(ble_device)
+        last: Exception | None = None
+        for i in range(attempts):
+            try:
+                conn = client.connect_and_discover(ble_device, peer)
+                if conn is not None:
+                    return conn
+                last = RuntimeError("connection failed or timed out")
+            except Exception as err:                            # noqa: BLE001
+                last = err
+                if not self._is_transport_error(err) or i == attempts - 1:
+                    break
+                time.sleep(1.5)
+        if last is not None and self._is_transport_error(last):
+            raise RuntimeError(
+                f"dongle transport not responding ({last}). The nRF52 serial link is "
+                "wedged — Stop the scan and Start it again to reopen the dongle (or give "
+                "it a few seconds idle), then retry Browse GATT.")
+        raise RuntimeError(f"connection failed: {last}")
+
     def _discover(self, ble_device, peer) -> dict:
         """Connect, walk the GATT database reading readable chars, disconnect."""
-        conn = client.connect_and_discover(ble_device, peer)
-        if conn is None:
-            raise RuntimeError("connection failed or timed out")
+        conn = self._connect(ble_device, peer)
         try:
+            # A dropped link during discovery leaves no services and makes every read
+            # time out (5 s each). blatann logs the driver-thread cause as
+            # NrfError.invalid_state on characteristic discovery — detect it here and
+            # fail clearly rather than persist an empty tree over good data.
+            # The blatann workaround (webui.blatann_patch) finalises discovery with
+            # partial results instead of wedging, so an empty database is now the
+            # genuine "nothing discoverable" case. An invalid_state can also be
+            # transient, so give discovery one more pass before giving up.
+            if not conn.database.services and conn.connected:
+                conn.discover_services().wait(10, exception_on_timeout=False)
+            if not conn.database.services:
+                if conn.connected:
+                    raise RuntimeError(
+                        "GATT discovery populated no services (peer still connected) "
+                        "even after a retry and the blatann partial-discovery "
+                        "workaround. This device's GATT does not enumerate over the "
+                        "dongle in this setup. If the transport then stops responding, "
+                        "Stop→Start the scan to reopen the dongle.")
+                raise RuntimeError(
+                    "GATT discovery returned no services — the peer disconnected "
+                    "during discovery. Bring it closer / keep it awake and retry.")
             tree = []
+            device_name = ""
             for svc in conn.database.services:
                 node = {
                     "uuid": str(svc.uuid),
@@ -246,11 +326,19 @@ class Engine:
                 }
                 for ch in svc.characteristics:
                     val_hex, interp = "", ""
-                    if ch.readable:
-                        _c, ev = ch.read().wait(5, exception_on_timeout=False)
-                        if ev is not None:
+                    # Skip reads once the link is gone — otherwise each one blocks 5 s.
+                    if ch.readable and conn.connected:
+                        try:
+                            _c, ev = ch.read().wait(5, exception_on_timeout=False)
+                        except Exception:                       # noqa: BLE001
+                            ev = None
+                        if ev is not None and getattr(ev, "value", None) is not None:
                             val_hex = ev.value.hex()
                             interp = client._interpret(ch.uuid, ev.value) or ""
+                            # GATT Device Name (0x2A00) — the only name some devices
+                            # expose (they advertise none); backfill it on the record.
+                            if client._u16(ch.uuid) == 0x2A00:
+                                device_name = ev.value.decode("utf-8", "replace").strip()
                     node["characteristics"].append({
                         "uuid": str(ch.uuid),
                         "name": client.name_for_uuid(ch.uuid) or "",
@@ -262,12 +350,20 @@ class Engine:
             detected, _flags, _ns, _nc = capabilities.analyze(conn.database.services)
             capreport = capabilities.report(conn.database.services)
         finally:
+            # Always tear the link down (not only when conn.connected looks True) —
+            # a wedged discovery can leave blatann's view and the SoftDevice link out
+            # of sync, and a leaked connection blocks the next browse.
             try:
-                conn.disconnect().wait()
+                conn.disconnect().wait(5, exception_on_timeout=False)
             except Exception:
                 pass
+        # A service that reported zero characteristics is almost always the blatann
+        # wedge finalised early by the workaround — flag it so the UI can offer the
+        # BlueZ fallback to complete the enumeration.
+        incomplete = [n["uuid"] for n in tree if not n["characteristics"]]
         return {"gatt": tree, "capabilities": [lbl for lbl, _note in detected],
-                "capability_report": capreport}
+                "capability_report": capreport, "device_name": device_name,
+                "partial": bool(incomplete), "incomplete_services": incomplete}
 
     # --- read side (reuses the passive analysers) --------------------------
     def list_devices(self, **filters) -> list[dict]:
@@ -285,6 +381,11 @@ class Engine:
         d["target"] = scan_fused.target_note(rec)
         d["exposure"] = exposure.assess(rec)
         d["exposure_report"] = exposure.report(rec)
+        # Flag a GATT tree left incomplete by the blatann workaround (services with
+        # no characteristics) so the detail page can warn and offer the BlueZ fallback.
+        incomplete = [s["uuid"] for s in d.get("gatt", []) if not s["characteristics"]]
+        d["gatt_partial"] = bool(incomplete)
+        d["gatt_incomplete"] = incomplete
         return d
 
     def exposure_report(self, address: str) -> str | None:

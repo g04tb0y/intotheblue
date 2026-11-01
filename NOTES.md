@@ -3,6 +3,45 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-11-02, GATT browse hardened on real hardware (Epson ET-3950 printer)
+
+*First live run of the webui GATT browse surfaced three real issues, now fixed and
+validated on hardware (target `5A:05:D9:10:6E:DB` = Epson ET-3950 Series printer).*
+
+- **blatann characteristic-discovery wedge.** For this device blatann issues a
+  follow-up `ble_gattc_char_disc` the SoftDevice rejects with `NrfError.invalid_state`,
+  raised in the driver event thread and only logged → the discovery state machine never
+  completes, `peer.database` stays empty, our `discover_services().wait()` times out, and
+  the GATT browse returned *nothing* even though services were found. Fix:
+  `webui/blatann_patch.py` — a contained, in-process monkeypatch (never edits the
+  installed package) wrapping the characteristic/descriptor discovery handlers so a raised
+  `NordicSemiException` finalises the phase with the partial results collected. Applied at
+  `webui` import. **Validated:** went from empty → 1800 (Device Name "ET-3950 Series",
+  Appearance), 1801, + the two 128-bit vendor services listed. The vendor services' own
+  characteristics still don't enumerate (that is exactly where blatann wedges) → flagged in
+  the UI with a "Could not enumerate all GATT" warning; the plan is a BlueZ (hci0) fallback
+  (task 1, next).
+- **Connection leak → "Already connected".** A browse that wedged left the link up, so
+  every subsequent `connect()` failed with `Already connected`. Fix in `engine`:
+  `_release_stale_connections()` (disconnect any peripheral blatann still holds) before
+  connecting, and always disconnect in the `finally` (not only when `conn.connected`).
+  Browse GATT is now repeatable. **Validated:** the error no longer recurs.
+- **Transport wedge classification.** `ble_gap_connect` can fail with
+  `rpc_no_response` / `rpc_invalid_state` (serial RPC to the nRF52), distinct from the
+  GATT `invalid_state`. `_is_transport_error` now matches any `NrfError.rpc_*`; a short
+  connect retry clears a one-off, else an actionable message (Stop→Start reopens the
+  dongle). Seen together with `xhci ... not part of TD` in dmesg — the documented VMware
+  USB-passthrough fault; Stop→Start (close+reopen) recovered it this session.
+- **GATT Device Name backfill.** `_discover` reads 0x2A00 and, on a successful browse,
+  `store.set_name()` fills a blank device name (never overwrites an advertised one) — the
+  printer advertises no name, so GATT is the only source. Plumbing unit-proven; the live
+  one-shot wasn't captured only because the printer advertises/accepts connections
+  intermittently (connect timed out on later attempts — device behaviour, not code).
+
+**Still open / next:** task 1 — a per-device *Enumerate via BlueZ* action (bluetoothctl
+`gatt.list-attributes` over hci0, independent of the dongle) to complete the vendor
+services' characteristics in-place from the warning, no scan restart.
+
 ## Resume here — 2026-11-01, web UI + MCP server + SQLite persistence (built, headless-validated; NOT yet hardware-validated)
 
 *Added a third front-end over the existing scanners: a FastAPI process serving a web

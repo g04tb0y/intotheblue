@@ -355,6 +355,22 @@ class Store:
                     )
             self._conn.commit()
 
+    def set_name(self, address: str, name: str, only_if_empty: bool = True) -> None:
+        """Set a device's name (e.g. the GATT Device Name read on a browse).
+
+        By default only fills a blank name, so a GATT name backfills a device that
+        advertised none without ever overwriting a real advertised local name.
+        """
+        address = normalize_address(address)
+        if not name:
+            return
+        sql = "UPDATE device SET name = ? WHERE address = ?"
+        if only_if_empty:
+            sql += " AND (name IS NULL OR name = '')"
+        with self._lock:
+            self._conn.execute(sql, (name, address))
+            self._conn.commit()
+
     def get_gatt(self, address: str) -> list[dict]:
         address = normalize_address(address)
         with self._lock:
