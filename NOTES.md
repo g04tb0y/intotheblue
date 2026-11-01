@@ -351,6 +351,27 @@ viability, filter, CSV and the three passive refusals without any hardware.
 
 ## TODO
 
+### webui GATT — interaction & enrichment (next up)
+- [ ] **GATT interaction in the webui** — the browse is read-only; add the active
+      operations the CLI already has (`client.write_char`, `subscribe_char`,
+      `serial_console` for Nordic UART). Per readable/writable/notifiable characteristic:
+      Read (on demand), **Write** (hex/text/auto, reuse `client._parse_write_value`),
+      Subscribe/notify (stream notifications to the page). Gate writes behind an explicit
+      action (passive/active boundary). Needs the dongle connected, so it runs in the same
+      pause→act→resume path as `browse_gatt` (hold the connection open across reads/writes
+      instead of connect-per-op).
+- [ ] **Capabilities view in the webui** — surface `capabilities.analyze/report` (DFU/OTA,
+      HID, NUS, DIS, …) on the device detail, like the CLI capabilities menu.
+- [ ] **Read BlueZ characteristic values** — `gatt_bluez` enumerates structure only
+      (`list-attributes` omits props/values); add `gatt.select-attribute` + `gatt.read`
+      (and flags via per-char `info`) so BlueZ-sourced vendor chars get props/values too.
+- [ ] **GATT Device Name backfill — confirm end-to-end** — plumbing proven (`store.set_name`
+      + 0x2A00 capture); capture one clean dongle discovery on an intermittent advertiser
+      to confirm the one-shot path live.
+- [ ] Classic (BR/EDR) detail in the webui — SDP profiles + CoD (`scan_classic.read_profiles`,
+      `decode_cod`), mirroring the CLI classic menu, so the detail page is complete per transport.
+
+### pre-existing
 - [ ] Optional: make the `csv/` export order match the on-screen discovery order
       (currently CSV is sorted by RSSI).
 - [ ] Re-validate the SPP serial console end-to-end once the Jabra bond is restored

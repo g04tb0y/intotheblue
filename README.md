@@ -29,15 +29,38 @@ uv venv --python 3.10 .venv310
 
 ## Usage
 
-The recommended entry point is the interactive CLI:
+The single entry point offers two front-ends over the same scanners (mutually
+exclusive — both open the one dongle):
 
 ```bash
-.venv310/bin/python cli.py
+.venv310/bin/python intotheblue.py --cli                # interactive curses menu (default)
+.venv310/bin/python intotheblue.py --webui --port 8000  # web UI + MCP server
 ```
 
-It shows a menu of activities; pick one, and when it finishes you're back at the
+`cli.py` still runs on its own (and takes a direct activity, e.g. `python cli.py webui`).
+The CLI shows a menu of activities; pick one, and when it finishes you're back at the
 menu. All tools autodetect the dongle's port from `/dev/serial/by-id` (fallback
 `/dev/ttyACM0`); you can force it with `--port`.
+
+### Web UI + MCP server + persistence
+
+`--webui` serves, in one process: a web UI (Jinja2 + HTMX, no build step), a JSON API,
+and an **MCP server** at `/mcp` (streamable HTTP) so an agent can query or drive the
+bench. Everything is backed by a lightweight **SQLite** store (`store.py`, stdlib
+`sqlite3`, at `db/intotheblue.db`) that persists scans, device enrichment and discovered
+GATT across sessions — nothing is installed, it loads from the working directory.
+
+- **Scans page** — start a backend (BLE dongle / fused / Classic), watch a live table
+  (identical columns to the CLI), export CSV; rows persist as they are seen.
+- **Devices page** — browse every device seen across all scans, with filters.
+- **Device detail** — enrichment, passive exposure, sighting history, and the **GATT**
+  tree. *Browse GATT (connect)* uses the dongle; when a device's vendor services don't
+  fully enumerate (a blatann limitation, handled by `webui/blatann_patch.py`), an
+  *Enumerate via BlueZ (hci0)* button completes them over the host adapter
+  (`gatt_bluez.py`) and merges the result. BlueZ enumeration needs `hci0` up
+  (`sudo systemctl start bluetooth && sudo hciconfig hci0 up`).
+
+It owns the dongle for its whole lifetime, so do **not** run the CLI at the same time.
 
 **Interactive workflow** — in any live scan you don't copy-paste MAC addresses:
 move the highlight with ↑/↓ (or `j`/`k`), press **Enter** on a device, and it
@@ -269,7 +292,16 @@ disclosure path was proven (see the identity-disclosure section above).
 ## Layout
 
 ```
-cli.py          interactive menu (entry point)
+intotheblue.py  single entry point (--cli / --webui)
+cli.py          interactive menu (also a direct launcher: `cli.py <activity>`)
+store.py        SQLite persistence (stdlib sqlite3): scans, enrichment, GATT
+gatt_bluez.py   GATT enumeration over the host adapter (hci0), dongle-independent
+webui/          web UI (Jinja2+HTMX) + JSON API + MCP server over one hardware engine
+  engine.py       single hardware owner (scan, browse GATT, flush to store)
+  app.py          FastAPI app + MCP mount (lifespan runs the MCP session manager)
+  api.py          HTTP routes (pages + HTMX/JSON endpoints)
+  mcp_server.py   FastMCP tools (read-only + active, over engine/store)
+  blatann_patch.py in-process workaround for the blatann GATT-discovery wedge
 scan_live.py    live BLE scan: full-screen table + CSV
 scan_classic.py live Bluetooth Classic (BR/EDR) scan via host adapter + CSV
 scan_le.py      live BLE scan via host adapter (BlueZ), subclasses the Classic scanner
