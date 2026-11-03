@@ -19,5 +19,9 @@ __pycache__/
 # Config tool serena
 .serena/
 
+# Fast Pair anti-spoofing public keys (operator-supplied / fetched cache; see
+# fastpair_keys.example.yaml). The live file may hold keys pulled from Google.
+fastpair_keys.yaml
+
 # Bluetooth SIG assigned-numbers checkout (authoritative vendor/UUID data)
 BluetoothSIGPublic/

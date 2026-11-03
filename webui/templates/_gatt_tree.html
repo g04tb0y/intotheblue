@@ -81,6 +81,50 @@
     </div>
   {% endif %}
 
+  {# Fast Pair Key-based Pairing: active handshake + robustness stress (items 2 & 3).
+     Shown only with an open session on a device exposing the KBP characteristic …1234. #}
+  {% set fp = namespace(found=false) %}
+  {% for svc in d.gatt %}{% for ch in svc.characteristics %}{% if ch.uuid|lower == 'fe2c1234-8366-4814-8eb0-01de32100bea' %}{% set fp.found = true %}{% endif %}{% endfor %}{% endfor %}
+  {% if session and fp.found %}
+    <div class="fp-console">
+      <strong>Fast Pair — Key-based Pairing (…1234)</strong>
+      {% set mid = d.fast_pair if (d.fast_pair and d.fast_pair|length == 6) else '' %}
+      <form hx-post="/api/devices/{{ d.address }}/gatt/fastpair-handshake" hx-target="#gatt" hx-swap="innerHTML"
+            hx-indicator="#fp-spinner" hx-disabled-elt="this">
+        <div>
+          <input type="text" name="provider_public" size="40"
+                 placeholder="Provider public key (hex/base64, 64 bytes) — or resolve by Model ID →">
+        </div>
+        <div>
+          <input type="text" name="model_id" size="8" value="{{ mid }}" placeholder="Model ID (hex)">
+          <label><input type="checkbox" name="allow_network" value="on"> allow Google lookup</label>
+          <span class="muted badge active">network: fetches the key from Google if not cached locally.</span>
+        </div>
+        <button type="submit" class="active">Run handshake</button>
+        <span class="muted badge active">ACTIVE: writes an encrypted KBP request and awaits the notify.</span>
+      </form>
+      <form hx-post="/api/devices/{{ d.address }}/gatt/fastpair-stress" hx-target="#gatt" hx-swap="innerHTML"
+            hx-indicator="#fp-spinner" hx-disabled-elt="this">
+        <select name="variant">
+          <option value="unencrypted-zero">unencrypted-zero (16 zero bytes)</option>
+          <option value="wrong-type">wrong-type (plaintext type 0xFF)</option>
+          <option value="too-short">too-short (4 bytes)</option>
+          <option value="too-long">too-long (100 bytes)</option>
+          <option value="random-16">random-16 (garbage ciphertext)</option>
+        </select>
+        <button type="submit" class="active">Stress</button>
+        <span class="muted badge active">ACTIVE: writes a malformed payload to observe the Provider's reaction.</span>
+      </form>
+      <span id="fp-spinner" class="htmx-indicator spinner">⏳ exercising Key-based Pairing…</span>
+      {% if d.gatt_session.fp_status %}
+        <p class="muted">Last Fast Pair {{ d.gatt_session.fp_status.action }}:
+          {{ d.gatt_session.fp_status.detail }}
+          {% if d.gatt_session.fp_status.ok %}<span class="badge active">valid response</span>{% endif %}
+          {% if d.gatt_session.fp_status.notified_hex %}<br><code>notify: {{ d.gatt_session.fp_status.notified_hex }}</code>{% endif %}</p>
+      {% endif %}
+    </div>
+  {% endif %}
+
   {% for svc in d.gatt %}
     <details open class="gatt-svc">
       <summary>{{ svc.uuid }}{% if svc.name %} — {{ svc.name }}{% endif %}</summary>

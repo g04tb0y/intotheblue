@@ -3,6 +3,75 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-11-03, Fast Pair GATT: passive profile + active handshake/stress (items 1-3) — HEADLESS-VALIDATED, HW RUN PENDING
+
+*Scelta maintainer (/plan): implementare gli item 1+2+3 del blocco Fast Pair, validati
+con un **Provider emulato**. Item 4 (pairing completo: passkey + account key) rinviato.*
+
+- **Nuovo `fastpair.py`** (top-level, **no blatann**, come `bledev/fastpair.py`): crypto +
+  codec del Key-based Pairing. ECDH **secp256r1** → **SHA-256[:16]** → chiave **AES-128**;
+  **AES-128-ECB** singolo blocco (16B, no IV). `build_kbp_request`/`parse_kbp_request`/
+  `build_kbp_response`/`parse_kbp_response` (round-trip simmetrico), `derive_key`,
+  `gen_keypair`, `public_key_bytes` (64B X‖Y). UUID + `FP_CHARACTERISTICS` per il surfacing.
+  Layout byte + crypto **verificati dallo spec** developers.google.com (NOTES diceva
+  erroneamente "fetch bloccato" — è accessibile; vedi `bond.py` docstring, da correggere).
+  `cryptography` 49.0.0 già nel venv → nessuna nuova dep nativa (pin aggiunto in requirements).
+- **Item 1 (passivo)**: `engine.fast_pair_profile` + `_fast_pair_profile_from_tree` sul tree
+  salvato (servizio `fe2c`), tab **Fast Pair** (`_fastpair.html`, refresh su `gatt-updated`
+  come Capabilities), route `GET …/fastpair`, MCP `fast_pair_profile`. Niente transmit.
+- **Item 2 (handshake attivo)**: `engine.fastpair_handshake(address, provider_public_hex)`
+  sul peer della sessione held-open: request cifrata (Case 1, pubkey effimera appesa) → write
+  `…1234` → attesa notify (subscribe one-shot) → `parse_kbp_response`. Esito fedele (risposta
+  che non decifra / nessuna notify = finding, non errore). Route `POST …/gatt/fastpair-handshake`,
+  form in `_gatt_tree.html`, MCP `fastpair_handshake`, esito su `gatt_session().fp_status`.
+- **Item 3 (stress attivo)**: `engine.fastpair_stress(address, variant)` — payload malformati
+  a `…1234` (`unencrypted-zero`/`wrong-type`/`too-short`/`too-long`/`random-16`), riporta
+  notify/silenzio/link-drop. Route `POST …/gatt/fastpair-stress`, `<select>`, MCP `fastpair_stress`.
+- **Provider emulato**: `emulate.py --fast-pair-gatt` (combinabile con `--fast-pair MODELID`):
+  server GATT **FE2C** reale (`…1234` W+N, `…1235` W+N, `…1236` W), coppia anti-spoofing
+  generata, **chiave pubblica stampata + salvata in `csv/fastpair_provider_pub.hex`** per il
+  Seeker. Handler `…1234`: `parse_kbp_request`→`build_kbp_response`→notify. Entrambi i lati
+  nostri (come `--positive-control`). Mutuamente esclusivo con `--positive-control`.
+- **MCP a 25 tool** (+`fast_pair_profile`, `fastpair_handshake`, `fastpair_stress`,
+  `fastpair_resolve_key`).
+- **Pubkey fetch per Model ID (nuovo `fastpair_keys.py`, no blatann)** — sblocca l'handshake
+  sui device reali senza Provider emulato. Catena first-hit: (1) file locale
+  `fastpair_keys.yaml` (git-ignored; seed `fastpair_keys.example.yaml`; override
+  `$INTOTHEBLUE_FASTPAIR_KEYS`), (2) **lookup Google opt-in** su
+  `nearbydevices-pa.googleapis.com/v1/device/<model-id-DECIMALE>?key=…&mode=MODE_RELEASE&alt=json`
+  (endpoint + campo `device.antiSpoofingKeyPair.publicKey` **verificati dal Chromium
+  `device_metadata_fetcher.cc`/`device_metadata.cc`**), con **cache** nel YAML. Niente API key
+  hardcoded: operatore via `$INTOTHEBLUE_FASTPAIR_API_KEY` (senza → path Google disabilitato).
+  `engine.fastpair_resolve_key` (loggato `boundary="network"` solo quando abilitato), e
+  `fastpair_handshake` accetta ora `provider_public` **o** `model_id`+`allow_network`. UI: nel
+  form handshake, campo Model ID (prefill dal `fast_pair` advertisato) + checkbox "allow Google
+  lookup". Spec: `.scratch/fastpair-pubkey-fetch/spec.md`.
+  **Headless OK**: resolve file (hex+base64), normalize 64/65B, fetch Google mockato + cache,
+  parse `_extract_pubkey` (camelCase + snake_case), `_fp_acquire_pubkey` (hex/base64/model-id/
+  errori), 25 tool MCP.
+- **LIVE — validato guidando la webui/MCP contro Redmi Buds 6 Play reali (2026-11-03).**
+  Dongle fused scan via l'API del server in esecuzione (niente headless):
+  - **Item 1 OK**: `GET /api/devices/<redmi>/fastpair` → profilo FE2C con **tutte e 4** le
+    char (`…1234` W/N, `…1235` W/N, `…1236` W, `…1237` W/N) sia dal tree in store sia dopo un
+    **browse fresco** (sessione aperta su RPA `46:31:E4:33:50:9E`). Confermato Provider reale.
+  - **Item 3 OK**: i 5 stress variant scritti su `…1234` → **nessuna notify, link stabile**
+    (sessione mai caduta su tutti e 5). Finding coerente con lo spec: le Redmi ignorano
+    silenziosamente le richieste KBP che non decifrano, senza rispondere né disconnettere.
+  - **Item 2 bloccato su API key**: handshake `model_id=FB9B72`+`allow_network` → la catena
+    resolve ritorna correttamente *"no API key (`$INTOTHEBLUE_FASTPAIR_API_KEY`)"* (esito
+    by-design). Per completarlo: esportare la API key nell'ambiente del server e **riavviare**
+    la webui, poi ri-lanciare l'handshake (resta aperto se la key non-GMS verrà accettata da
+    Google). Sessione chiusa a fine test, scan ripreso.
+- **Headless OK**: round-trip crypto (chiave AES identica sui due lati, req/resp
+  round-trip, wrong-key rifiutata); `fast_pair_profile` su tree sintetico (present/props,
+  None senza FE2C); 24 tool MCP registrati; app FastAPI costruisce con le 3 route nuove;
+  `_fastpair.html`/`_gatt_tree.html` rendono; `emulate` importa. **Da validare su HW**: servono
+  **due dongle nRF52** (Seeker webui + Provider `emulate.py`; CLI/webui restano esclusivi sullo
+  stesso dongle). 1) `emulate.py --fast-pair FB9B72 --fast-pair-gatt` → annota la pubkey; 2) webui
+  sull'altro dongle: scan → seleziona il clone → Open session → tab Fast Pair mostra `…1234/5/6`;
+  3) incolla la pubkey nel form handshake → la notify decifra a type `0x01` con l'addr del
+  Provider; 4) stress variant → osserva; 5) verifica log `/logs` `boundary=active` + watchdog idle.
+
 ## Resume here — 2026-11-03, Devices list organization: recency + session filters + prune (HARDWARE-VALIDATED)
 
 *Richiesta maintainer: lo scan salva ogni device visto subito nel `device` table (flush
@@ -625,14 +694,16 @@ viability, filter, CSV and the three passive refusals without any hardware.
       `/api/logs/tail` every 3 s, `_log_tail.html`) tails recent activity on every page.
 - [ ] **Keep the MCP surface in sync** — ONGOING. **MCP ⇄ webui: in parity** — every
       `engine` op has a thin MCP wrapper with passive-vs-radio marked in the docstring.
-      Tool count **21**: read `list_devices` (now with `seen_within_seconds`/
+      Tool count **25**: read `list_devices` (now with `seen_within_seconds`/
       `current_session_only`), `get_device`, `exposure_report`, `capabilities`,
-      `list_scan_sessions`, `scan_status`, `scan_snapshot`, `query_events`; store-
-      destructive `prune_devices`; active `scan_start`, `scan_stop`, `browse_gatt`,
-      `gatt_connect`, `gatt_disconnect`, `gatt_pair`, `gatt_read`, `gatt_write`,
-      `gatt_subscribe`, `gatt_unsubscribe`, `gatt_notifications`, `classic_profiles`.
-      Latest add: `prune_devices` + the `list_devices` recency/session filters (2026-11-03).
-      As future tools land (Fast Pair, etc.), add the matching MCP wrapper in the same change.
+      `fast_pair_profile`, `fastpair_resolve_key` (network-opt-in), `list_scan_sessions`,
+      `scan_status`, `scan_snapshot`, `query_events`; store-destructive `prune_devices`;
+      active `scan_start`, `scan_stop`, `browse_gatt`, `gatt_connect`, `gatt_disconnect`,
+      `gatt_pair`, `gatt_read`, `gatt_write`, `gatt_subscribe`, `gatt_unsubscribe`,
+      `gatt_notifications`, `classic_profiles`, `fastpair_handshake`, `fastpair_stress`.
+      Latest add: `fast_pair_profile` + `fastpair_handshake` + `fastpair_stress` +
+      `fastpair_resolve_key` (2026-11-03).
+      As future tools land (full Fast Pair pairing, etc.), add the MCP wrapper in the same change.
     - **Known CLI gap (not MCP's):** the CLI's BLE GATT menu (`cli.py` `_gatt_menu`,
       connect-on-enter model) exposes **no dongle-side Pair** — the only Pair in the CLI is
       Classic/BlueZ via `scan_classic.pair` (`cli.py:291`). So the new `gatt_pair(dongle)`
@@ -656,17 +727,26 @@ reusing `client.*`; keep the crypto isolated in a new `fastpair.py` (like `blede
 fastpair.py` for the passive Model-ID side). Keep MCP at parity (one thin `engine` tool
 per action, passive-vs-radio marked in the docstring). Spec:
 developers.google.com/nearby/fast-pair/specifications/characteristics.
-- [ ] **Surface the Fast Pair GATT profile in the UI** — when a browsed/stored tree
-      contains `0xFE2C`, show which Fast Pair characteristics are present and their props
-      (confirms a real Provider; ties into the passive FastPair/Model-ID enrichment
-      already done). Passive over the stored tree, like the Capabilities view.
-- [ ] **Exercise the Key-based Pairing handshake** — a per-device action that writes a
-      Key-based Pairing Request to `…1234` and surfaces the notify response/error. Active,
-      gated; reuses the session's read/write/subscribe plumbing.
-- [ ] **Robustness/stress on the handshake** — malformed / wrong message-type /
-      unencrypted writes to `…1234` to observe how the Provider handles invalid input on a
-      crypto-gated-but-unencrypted characteristic. Ties to the bench's authorized stress-
-      test purpose; active, gated.
+- [x] **Surface the Fast Pair GATT profile in the UI** — DONE 2026-11-03 (headless-validated;
+      HW run pending). `engine.fast_pair_profile`/`_fast_pair_profile_from_tree` over the
+      *stored* tree lists which FE2C characteristics (`…1234`/`…1235`/`…1236`/`…1237`) are
+      present + props; Fast Pair tab in `device_detail.html` (`_fastpair.html`,
+      `gatt-updated` refresh like Capabilities, shown when `d.fast_pair or
+      d.fast_pair_profile`); route `GET /api/devices/{addr}/fastpair`; MCP read tool
+      `fast_pair_profile`. Passive, transmits nothing.
+- [x] **Exercise the Key-based Pairing handshake** — DONE 2026-11-03 (headless-validated;
+      HW run pending). `engine.fastpair_handshake(address, provider_public_hex)` on the
+      held-open session: builds an encrypted KBP request (Case 1, ephemeral pubkey appended)
+      via `fastpair.build_kbp_request`, writes `…1234`, awaits the notify (one-shot subscribe,
+      not the polled buffer), decrypts via `parse_kbp_response`. A non-decrypting/absent
+      response is a reported finding, not an error. Route `POST …/gatt/fastpair-handshake`,
+      form in `_gatt_tree.html` (active badge, hx-indicator), MCP `fastpair_handshake`,
+      outcome on `gatt_session().fp_status`.
+- [x] **Robustness/stress on the handshake** — DONE 2026-11-03 (headless-validated; HW run
+      pending). `engine.fastpair_stress(address, variant)` writes malformed payloads to
+      `…1234` (`unencrypted-zero` / `wrong-type` / `too-short` / `too-long` / `random-16`)
+      and reports notify/silence/dropped-link. Route `POST …/gatt/fastpair-stress`, `<select>`
+      form, MCP `fastpair_stress`. Active, gated.
 - [ ] **Complete Fast Pair pairing flow** — drive the full procedure end-to-end
       (ECDH handshake → Passkey exchange `…1235` → Account Key write `…1236`), as client.
       **Key note (corrected 2026-11-02):** the first pairing needs **only the Provider's
@@ -740,6 +820,21 @@ developers.google.com/nearby/fast-pair/specifications/characteristics.
   fix for the RFCOMM/D-Bus helpers. Committed and pushed to `origin/devel`.
 
 ## Design decisions
+
+- **The MCP/webui server is the agent's end-to-end test surface — use it, don't stop at
+  "headless".** The whole point of running a webui + MCP server is that an agent can drive
+  the *real* bench through it: scan/select/act, GATT browse, the held-open session,
+  `fastpair_*`, etc., against the actual dongle. So validation must not end at headless unit
+  checks and "HW pending" — when a server is up, **drive it** (its JSON API over
+  `http://127.0.0.1:<port>/api/...`, or the MCP endpoint at `/mcp`) and exercise the real
+  path. Operational truths that still bound this (state them, don't use them as an excuse):
+  (1) the server owns the **one** dongle — only one process at a time, and it must be
+  **restarted to load new code** (uvicorn here runs without `--reload`), so new routes need a
+  restart; don't kill the maintainer's live scanning session without asking; (2) genuinely
+  physical steps (put a device in pairing mode, a *second* nRF52 for the emulated Provider)
+  and operator secrets (`$INTOTHEBLUE_FASTPAIR_API_KEY`) are the maintainer's, not something
+  the agent can fake. Everything else that the server exposes, the agent can and should test
+  via the server itself. See [[use-mcp-webui-server-to-test]].
 
 - **Python 3.10 pinned** (`.venv310/`) — `pc-ble-driver-py` (native lib under blatann)
   ships no wheels for ≥ 3.11. Non-negotiable until that changes upstream.
@@ -1219,6 +1314,34 @@ hardware. Until one lands, the goal stays partially open.
   extend as needed.
 - **Roadmap depth**: active enumeration, richer peripheral/server interaction, and
   device cloning/emulation — all still to be designed into the scan/select/act model.
+
+- **Second BLE dongle for the Fast Pair handshake (item 2) — decided 2026-11-03.**
+  Validating the *valid* Key-based Pairing handshake end-to-end needs **two** nRF52
+  dongles (Seeker = webui, Provider = `emulate.py --fast-pair-gatt`; webui/CLI are
+  exclusive on one dongle). **Which to buy: a second Nordic nRF52840 Dongle (PCA10059)**
+  (~€10-12) — the exact target `pc-ble-driver-py` ships precompiled *Connectivity*
+  firmware for (USB-CDC build), flashable over USB via nRF Connect Programmer / `nrfutil`,
+  no SEGGER/debugger needed (serial bootloader onboard). Alternative: nRF52840 DK
+  (PCA10056, ~€45) for onboard J-Link flashing/debug. **Avoid the Seeed Studio XIAO BLE
+  (nRF52840):** right chip, but NOT a Nordic reference board, so there is **no precompiled
+  connectivity hex** for it and no onboard debugger — it would need the connectivity
+  firmware rebuilt for the XIAO's clock/USB config and SWD/UF2 flashing (a build project,
+  not plug-and-play). Match the PCA10059 hex to the same `sd_api` version as the existing
+  dongle. **Key clarification on real targets:** a *valid* handshake against the real Redmi
+  buds is **gated on having their anti-spoofing public key**, not forbidden. That key is
+  public by nature and obtainable — the production path is Google's metadata endpoint keyed
+  by Model ID (GMS-authenticated, so it needs the GMS request replicated, not an anonymous
+  GET), or extracting it from a traffic/device capture, or an operator-supplied key file.
+  The emulated Provider (`--fast-pair-gatt`) is just the **fastest** positive control (we
+  own both keys), not the only route. **Posture correction (2026-11-03, maintainer):** the
+  "offline / non-phoning-home" line was a *default* for telemetry (OTel off) and the
+  *passive* Model-ID→name lookup (local YAML over Google's endpoint) — it is **not** a ban on
+  contacting Google when a test needs it. The standing goal is the most complete test tool,
+  so a "fetch anti-spoofing public key from Google by Model ID" capability is in-scope and
+  would make item 2 runnable against real devices without the emulated Provider. Meanwhile
+  item 1 (passive FE2C profile) and item 3 (malformed-write stress) already work against the
+  real buds with a **single** dongle; only the emulated-Provider validation of item 2 needs
+  the second radio.
 
 ## Actions log (recent first)
 

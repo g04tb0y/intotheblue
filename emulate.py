@@ -11,6 +11,7 @@ Usage:
     python emulate.py --name "TestDevice"
     python emulate.py --name "TestDevice" --duration 600
     python emulate.py --fast-pair FB9B72        # clone a real Fast Pair advertisement
+    python emulate.py --fast-pair FB9B72 --fast-pair-gatt   # + a working FE2C GATT server
 """
 from __future__ import annotations
 
@@ -26,12 +27,16 @@ from blatann.gatt.gatts import GattsCharacteristicProperties
 from blatann.uuid import Uuid16, Uuid128
 from blatann.waitables import GenericWaitable
 
+import fastpair
 from bledev import open_device
 
 logger = example_utils.setup_logger(level="INFO")
 
 # Google Fast Pair Service UUID (16-bit), for the advertisement-clone mode.
 _FAST_PAIR_UUID = 0xFE2C
+# Where the emulated Provider writes its anti-spoofing public key so the Seeker side
+# (webui/MCP `fastpair_handshake`) can load it — operator-supplied, offline posture.
+_FP_PUBKEY_PATH = "csv/fastpair_provider_pub.hex"
 
 # Custom base UUID (Nordic-like). Slots 2-3 identify service/characteristic.
 SERVICE_UUID = Uuid128("bede0001-8dca-4c1e-9f2a-001122334455")
@@ -82,6 +87,71 @@ def _on_pairing_complete(peer, event_args):
     logger.info("Pairing complete: %s", event_args)
 
 
+def _add_fast_pair_gatt(ble_device, provider_priv):
+    """Add a working Fast Pair Service (FE2C) GATT server: the emulated Provider side.
+
+    Mirrors ``--positive-control`` for the Key-based Pairing handshake — both the Seeker
+    (webui) and this Provider are ours, so the whole exchange is validatable end-to-end
+    offline. The anti-spoofing **private** key stays here; its **public** half is written
+    to ``_FP_PUBKEY_PATH`` (and logged) for the Seeker to load. Only Key-based Pairing
+    (…1234) is answered; Passkey/Account Key are exposed but not yet driven (items 2-3
+    cover the handshake, not the full pairing flow).
+    """
+    service = ble_device.database.add_service(Uuid16(_FAST_PAIR_UUID))
+    kbp_char = service.add_characteristic(
+        Uuid128(fastpair.KBP_UUID),
+        GattsCharacteristicProperties(read=False, write=True, write_no_response=True,
+                                      notify=True, max_length=80, variable_length=True),
+        b"")
+    service.add_characteristic(
+        Uuid128(fastpair.PASSKEY_UUID),
+        GattsCharacteristicProperties(read=False, write=True, notify=True,
+                                      max_length=16, variable_length=True),
+        b"")
+    service.add_characteristic(
+        Uuid128(fastpair.ACCOUNT_KEY_UUID),
+        GattsCharacteristicProperties(read=False, write=True, max_length=16,
+                                      variable_length=True),
+        b"")
+
+    provider_addr = str(ble_device.address)
+
+    def _on_kbp_write(characteristic, event_args):
+        data = bytes(event_args.value)
+        logger.info("FP KBP <- %d bytes: %s", len(data), data.hex())
+        if len(data) < 80:
+            logger.warning("FP KBP: no appended Seeker public key (len=%d) — cannot run "
+                           "anti-spoofing ECDH; ignoring (would need a stored account key)", len(data))
+            return
+        try:
+            seeker_pub = data[16:80]
+            key = fastpair.derive_key(provider_priv, seeker_pub)
+            req = fastpair.parse_kbp_request(key, data)
+        except Exception as err:                                # noqa: BLE001
+            logger.warning("FP KBP: could not decrypt/parse request: %s", err)
+            return
+        if req["provider_addr"].upper() != provider_addr.split(",")[0].upper():
+            logger.warning("FP KBP: request Provider address %s != ours %s (responding anyway)",
+                           req["provider_addr"], provider_addr)
+        resp = fastpair.build_kbp_response(key, provider_addr)
+        characteristic.set_value(resp, notify_client=True)
+        logger.info("FP KBP -> notified response %s", resp.hex())
+
+    kbp_char.on_write.register(_on_kbp_write)
+
+    pub_hex = fastpair.public_key_bytes(provider_priv).hex()
+    try:
+        import os
+        os.makedirs("csv", exist_ok=True)
+        with open(_FP_PUBKEY_PATH, "w") as fh:
+            fh.write(pub_hex + "\n")
+    except OSError as err:
+        logger.warning("Could not write %s: %s", _FP_PUBKEY_PATH, err)
+    logger.info("FAST PAIR GATT — Provider anti-spoofing PUBLIC key (give this to the "
+                "Seeker's handshake):\n  %s\n  (also saved to %s)", pub_hex, _FP_PUBKEY_PATH)
+    return service
+
+
 def _fast_pair_adv_data(model_id: bytes):
     """Clone a real Fast Pair *discoverable* advertisement.
 
@@ -105,7 +175,8 @@ def _fast_pair_adv_data(model_id: bytes):
     return adv_data, scan_data
 
 
-def main(port, name, duration, positive_control=False, fast_pair_model=None):
+def main(port, name, duration, positive_control=False, fast_pair_model=None,
+         fast_pair_gatt=False):
     ble_device = open_device(port, configure=True)
 
     ble_device.generic_access_service.device_name = name
@@ -155,10 +226,23 @@ def main(port, name, duration, positive_control=False, fast_pair_model=None):
 
     counter_thread = CounterThread(counter_char)
 
+    if fast_pair_gatt:
+        # Emulated Fast Pair Provider: generate the anti-spoofing key pair and stand up
+        # the FE2C GATT server that answers Key-based Pairing (items 2-3 positive control).
+        provider_priv = fastpair.gen_keypair()
+        _add_fast_pair_gatt(ble_device, provider_priv)
+
     if fast_pair_model is not None:
         adv_data, scan_data = _fast_pair_adv_data(fast_pair_model)
         logger.info("FAST PAIR CLONE — advertising model id %s (FE2C, connectable, nameless)",
                     fast_pair_model.hex().upper())
+    elif fast_pair_gatt:
+        # No Model ID given but a FP GATT server is up: advertise FE2C connectable and named
+        # so the Seeker can find and connect to it (a real Provider is nameless, but a named
+        # beacon makes the bench target easy to select).
+        adv_data = advertising.AdvertisingData(
+            local_name=name, flags=0x06, service_uuid16s=[Uuid16(_FAST_PAIR_UUID)])
+        scan_data = advertising.AdvertisingData()
     else:
         adv_data = advertising.AdvertisingData(local_name=name, flags=0x06)
         scan_data = advertising.AdvertisingData(
@@ -196,6 +280,11 @@ if __name__ == "__main__":
                         help="Clone a real Fast Pair advertisement: emit FE2C service data with "
                         "this 3-byte (6 hex) Model ID, connectable, so a seeker/phone recognises "
                         "the product. E.g. --fast-pair FB9B72. Advertisement only (no FP GATT).")
+    parser.add_argument("--fast-pair-gatt", action="store_true",
+                        help="Stand up a working Fast Pair Service (FE2C) GATT server that answers "
+                        "the Key-based Pairing handshake — the in-house Provider positive control "
+                        "for the Seeker-side handshake/stress. Generates an anti-spoofing key pair "
+                        "and prints/saves its public key. Combinable with --fast-pair MODELID.")
     args = parser.parse_args()
 
     fast_pair_model = None
@@ -208,6 +297,8 @@ if __name__ == "__main__":
             parser.error(f"--fast-pair: '{args.fast_pair}' is not valid hex")
         if len(fast_pair_model) != 3:
             parser.error("--fast-pair: Model ID must be exactly 3 bytes (6 hex digits)")
+    if args.fast_pair_gatt and args.positive_control:
+        parser.error("--fast-pair-gatt and --positive-control are mutually exclusive")
 
     if args.name:
         name = args.name
@@ -215,7 +306,9 @@ if __name__ == "__main__":
         name = "PosCtrlBuds"
     elif fast_pair_model is not None:
         name = "FPClone"
+    elif args.fast_pair_gatt:
+        name = "FPProvider"
     else:
         name = "TestDevice"
     main(args.port, name, args.duration, positive_control=args.positive_control,
-         fast_pair_model=fast_pair_model)
+         fast_pair_model=fast_pair_model, fast_pair_gatt=args.fast_pair_gatt)

@@ -68,11 +68,13 @@ body.bare { padding-bottom: 1rem; }
 #tab-overview:checked ~ label[for=tab-overview],
 #tab-gatt:checked ~ label[for=tab-gatt],
 #tab-caps:checked ~ label[for=tab-caps],
+#tab-fastpair:checked ~ label[for=tab-fastpair],
 #tab-classic:checked ~ label[for=tab-classic] { color: var(--fg); background: var(--panel);
   border-color: var(--accent); }
 #tab-overview:checked ~ #panel-overview,
 #tab-gatt:checked ~ #panel-gatt,
 #tab-caps:checked ~ #panel-caps,
+#tab-fastpair:checked ~ #panel-fastpair,
 #tab-classic:checked ~ #panel-classic { display: block; }
 
 .session-bar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;

@@ -23,6 +23,7 @@ dongle/adapter is touched only when a scan or a GATT browse actually starts.
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ from types import SimpleNamespace
 import capabilities
 import client
 import eventlog as eventlog_module
+import fastpair
+import fastpair_keys
 import exposure
 import gatt_bluez
 import scan_classic
@@ -69,6 +72,7 @@ class Engine:
         self._gatt_subscribed: set[str] = set()  # char uuids currently subscribed
         self._gatt_deadline: float = 0.0         # idle auto-close time (monotonic-ish)
         self._gatt_pair_status: dict | None = None  # last Pair outcome (for UI/MCP)
+        self._gatt_fp_status: dict | None = None   # last Fast Pair handshake/stress outcome
 
     # Idle timeout for a held-open GATT session: a session pins the scan paused and
     # holds an LE link, so it must not leak if the browser tab is closed mid-session.
@@ -295,6 +299,7 @@ class Engine:
                               and getattr(self._gatt_peer, "connected", False)),
             "subscribed": sorted(self._gatt_subscribed),
             "pair_status": self._gatt_pair_status,
+            "fp_status": self._gatt_fp_status,
         }
 
     def gatt_connect(self, address: str) -> dict:
@@ -523,6 +528,184 @@ class Engine:
         return {"method": "dongle", "status": status, "bonded": bonded,
                 "detail": f"status={status}, security_level={level}"}
 
+    # --- Fast Pair Key-based Pairing (active — TODO items 2 & 3) -----------
+    def _fp_kbp_char(self, address: str):
+        """The open session's Key-based Pairing characteristic (…1234), or raise. Lock held."""
+        conn = self._require_session(address)
+        kbp = self._find_char(conn, fastpair.KBP_UUID)
+        if kbp is None:
+            raise RuntimeError("device exposes no Fast Pair Key-based Pairing characteristic "
+                               "(…1234) — not a Fast Pair Provider, or GATT not fully browsed")
+        return kbp
+
+    def _fp_write_await_notify(self, kbp, payload: bytes, timeout: float = 10.0) -> bytes | None:
+        """Write `payload` to the KBP char and wait for one notify. Returns the raw notify or None.
+
+        Subscribes a one-shot handler around the write (the handshake is request→response,
+        not a stream, so it does NOT use the session's polled notification buffer). Lock held.
+        """
+        got = threading.Event()
+        box: dict[str, bytes] = {}
+
+        def _on_notify(_c, e):                                   # blatann event thread
+            val = getattr(e, "value", None)
+            if val is not None and "raw" not in box:
+                box["raw"] = bytes(val)
+                got.set()
+
+        subscribed = False
+        if kbp.subscribable:
+            kbp.subscribe(_on_notify).wait(5, exception_on_timeout=False)
+            subscribed = True
+        try:
+            if not client.write_char_value(kbp, payload):
+                raise RuntimeError("write to Key-based Pairing failed/timed out")
+            if subscribed:
+                got.wait(timeout)
+        finally:
+            if subscribed:
+                try:
+                    kbp.unsubscribe()
+                except Exception:                               # noqa: BLE001
+                    pass
+        return box.get("raw")
+
+    def fastpair_resolve_key(self, model_id: str, allow_network: bool = False) -> dict:
+        """Resolve a Fast Pair anti-spoofing PUBLIC key by Model ID (file → opt-in Google).
+
+        Offline file lookup is a passive read (not logged); an opt-in Google fetch is a
+        **network** op (logged as such). Returns `{model_id, public_key_hex|None, source,
+        detail}`. See `fastpair_keys.resolve`."""
+        if not allow_network:
+            r = fastpair_keys.resolve(model_id, allow_network=False)
+            return {"model_id": r["model_id"], "source": r["source"], "detail": r["detail"],
+                    "public_key_hex": r["public_key"].hex() if r["public_key"] else None}
+        with self._op_log("fastpair_key_fetch", action=f"model {model_id}",
+                          boundary="network", start=True):
+            r = fastpair_keys.resolve(model_id, allow_network=True)
+            return {"model_id": r["model_id"], "source": r["source"], "detail": r["detail"],
+                    "public_key_hex": r["public_key"].hex() if r["public_key"] else None}
+
+    def _fp_acquire_pubkey(self, provider_public_hex: str, model_id: str,
+                           allow_network: bool) -> bytes:
+        """Resolve the Provider public key for a handshake: explicit hex wins, else Model ID."""
+        if provider_public_hex and provider_public_hex.strip():
+            key = fastpair_keys._decode_key_text(provider_public_hex)
+            if key is None:
+                raise RuntimeError("provider public key must be 64 bytes (128 hex / base64)")
+            return key
+        if model_id and model_id.strip():
+            r = fastpair_keys.resolve(model_id, allow_network=allow_network)
+            if r["public_key"] is None:
+                raise RuntimeError(f"could not resolve a public key for model {model_id!r}: "
+                                   f"{r['detail']}")
+            return r["public_key"]
+        raise RuntimeError("provide the Provider's public key (hex/base64) or a Model ID")
+
+    def fastpair_handshake(self, address: str, provider_public_hex: str = "",
+                           model_id: str = "", allow_network: bool = False) -> dict:
+        """ACTIVE: run the Fast Pair Key-based Pairing handshake on the open session.
+
+        Writes an AES-encrypted Key-based Pairing Request (Case 1, with our ephemeral
+        public key appended) to …1234 and waits for the Provider's notified response,
+        then decrypts it. The Provider's 64-byte anti-spoofing public key comes either
+        from `provider_public_hex` (hex/base64 — e.g. what `emulate.py --fast-pair-gatt`
+        prints for the positive control) or, if omitted, resolved by `model_id` via
+        `fastpair_keys` (local file, plus an opt-in Google lookup when `allow_network`).
+
+        The outcome is reported faithfully: a response that does not decrypt as a valid
+        type-0x01 block, or no notify at all, is a *finding* (the Provider rejected or
+        ignored us), not an exception. Returns a dict stashed on `gatt_session().fp_status`.
+        """
+        address = store_module.normalize_address(address)
+        with self._op_log("fastpair_handshake", device=address,
+                          action="key-based pairing", boundary="active", start=True):
+            provider_pub = self._fp_acquire_pubkey(provider_public_hex, model_id, allow_network)
+            seeker = fastpair.gen_keypair()
+            key = fastpair.derive_key(seeker, provider_pub)
+            request = fastpair.build_kbp_request(
+                key, address, public_key64=fastpair.public_key_bytes(seeker))
+            with self._lock:
+                kbp = self._fp_kbp_char(address)
+                raw = self._fp_write_await_notify(kbp, request)
+                self._touch_session()
+            result = self._fp_interpret_response(key, raw, request)
+            self._gatt_fp_status = result
+            return result
+
+    @staticmethod
+    def _fp_interpret_response(key: bytes, raw: bytes | None, request: bytes) -> dict:
+        base = {"action": "handshake", "request_hex": request.hex()}
+        if raw is None:
+            return {**base, "ok": False,
+                    "detail": "no notify from Key-based Pairing within timeout — "
+                              "the Provider ignored the request"}
+        try:
+            resp = fastpair.parse_kbp_response(key, raw)
+        except ValueError as err:
+            return {**base, "ok": False, "notified_hex": raw.hex(),
+                    "detail": f"response did not decrypt as a valid KBP response: {err}"}
+        return {**base, "ok": True, "notified_hex": raw.hex(),
+                "response_type": resp["type"], "provider_addr": resp["provider_addr"],
+                "salt": resp["salt"].hex(),
+                "detail": f"valid Key-based Pairing Response — Provider address "
+                          f"{resp['provider_addr']}"}
+
+    # Stress payloads for …1234: (name, bytes-or-builder). Builders take the KBP char's
+    # device address so a "valid-type-wrong-key" case still targets the right Provider.
+    _FP_STRESS_VARIANTS = {
+        "unencrypted-zero": "16 zero bytes (unencrypted, type 0x00) — no valid ciphertext",
+        "wrong-type": "16 bytes of a block whose plaintext type is 0xFF",
+        "too-short": "a 4-byte write (below the 16-byte block size)",
+        "too-long": "a 100-byte write (above request+pubkey)",
+        "random-16": "16 random bytes (garbage ciphertext)",
+    }
+
+    def fastpair_stress(self, address: str, variant: str) -> dict:
+        """ACTIVE: write a malformed Key-based Pairing payload and report the Provider's reaction.
+
+        Exercises how a Provider handles invalid input on the crypto-gated-but-GATT-
+        unencrypted …1234 (authorized robustness testing). Reports the notify (if any),
+        the write outcome, and whether the link dropped — all valid findings.
+        """
+        address = store_module.normalize_address(address)
+        if variant not in self._FP_STRESS_VARIANTS:
+            raise ValueError(f"unknown stress variant {variant!r} "
+                             f"(use one of {', '.join(self._FP_STRESS_VARIANTS)})")
+        with self._op_log("fastpair_stress", device=address,
+                          action=variant, boundary="active", start=True):
+            if variant == "unencrypted-zero":
+                payload = bytes(16)
+            elif variant == "wrong-type":
+                # A deterministic 16-byte block; its plaintext is whatever, the point is
+                # the Provider must reject it (no matching account/anti-spoofing key).
+                payload = bytes([0xFF]) + bytes(15)
+            elif variant == "too-short":
+                payload = bytes(4)
+            elif variant == "too-long":
+                payload = bytes(100)
+            else:                                               # random-16
+                payload = os.urandom(16)
+            with self._lock:
+                kbp = self._fp_kbp_char(address)
+                raw = self._fp_write_await_notify(kbp, payload, timeout=5.0)
+                conn = self._gatt_peer
+                still_connected = bool(getattr(conn, "connected", False))
+                self._touch_session()
+            result = {
+                "action": "stress", "variant": variant,
+                "description": self._FP_STRESS_VARIANTS[variant],
+                "sent_hex": payload.hex(),
+                "notified_hex": raw.hex() if raw is not None else "",
+                "notify": raw is not None,
+                "still_connected": still_connected,
+                "detail": ("Provider notified a response" if raw is not None
+                           else "Provider sent no notify")
+                          + ("" if still_connected else " — connection dropped"),
+            }
+            self._gatt_fp_status = result
+            return result
+
     # --- session helpers ---------------------------------------------------
     def _require_session(self, address: str):
         """The connected peer for an open session on `address`, or raise. Lock held."""
@@ -576,6 +759,7 @@ class Engine:
         self._gatt_notifs = {}
         self._gatt_subscribed = set()
         self._gatt_pair_status = None
+        self._gatt_fp_status = None
         if self._scanner is not None:
             try:
                 self._scanner.resume()
@@ -831,6 +1015,7 @@ class Engine:
         # from structure already discovered, so the detail page shows it without a live
         # connection and refreshes whenever a browse/session updates the tree.
         d["capabilities"] = self._capabilities_from_tree(d.get("gatt", []))
+        d["fast_pair_profile"] = self._fast_pair_profile_from_tree(d.get("gatt", []))
         d["gatt_session"] = self.gatt_session()
         return d
 
@@ -875,6 +1060,46 @@ class Engine:
         if d is None:
             return None
         return self._capabilities_from_tree(d.get("gatt", []))
+
+    # --- Fast Pair profile (passive surfacing — TODO item 1) ----------------
+    @staticmethod
+    def _fast_pair_profile_from_tree(tree: list[dict]) -> dict | None:
+        """Which Fast Pair GATT characteristics a stored tree exposes, and their props.
+
+        Passive: reads the structure already discovered (service ``0xFE2C``), never
+        connects. Confirms the device is a real Fast Pair Provider and ties into the
+        passive Model-ID enrichment (`bledev/fastpair.py`). Returns ``None`` when no
+        FE2C service is present in the tree.
+        """
+        def _is_fe2c(uuid: str) -> bool:
+            # The tree keeps 16-bit UUIDs as the 4-hex short form ("fe2c", like
+            # capabilities.py), but tolerate a full base-UUID form too.
+            u = str(uuid).lower()
+            return u == fastpair.SERVICE_UUID16 or u.startswith("0000" + fastpair.SERVICE_UUID16)
+
+        svc = next((s for s in tree if _is_fe2c(s.get("uuid", ""))), None)
+        if svc is None:
+            return None
+        found = {str(c.get("uuid", "")).lower(): (c.get("props", "") or "")
+                 for c in svc.get("characteristics", [])}
+        chars = []
+        for uuid, name in fastpair.FP_CHARACTERISTICS.items():
+            chars.append({
+                "uuid": uuid, "name": name,
+                "present": uuid in found, "props": found.get(uuid, ""),
+            })
+        return {
+            "service_uuid": str(svc.get("uuid", "")),
+            "characteristics": chars,
+            "n_present": sum(1 for c in chars if c["present"]),
+        }
+
+    def fast_pair_profile(self, address: str) -> dict | None:
+        """Fast Pair GATT profile for a device from its stored tree (read-only, passive)."""
+        d = self._store.get_device(address)
+        if d is None:
+            return None
+        return self._fast_pair_profile_from_tree(d.get("gatt", []))
 
     # --- Classic SDP profiles (Task 5) -------------------------------------
     def classic_profiles(self, address: str) -> dict:

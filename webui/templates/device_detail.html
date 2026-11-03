@@ -28,6 +28,10 @@
   <label for="tab-gatt">GATT</label>
   <input type="radio" name="tab" id="tab-caps">
   <label for="tab-caps">Capabilities</label>
+  {% if d.fast_pair or d.fast_pair_profile %}
+    <input type="radio" name="tab" id="tab-fastpair">
+    <label for="tab-fastpair">Fast Pair</label>
+  {% endif %}
   {% if d.transport == 'classic' or d.cod_label %}
     <input type="radio" name="tab" id="tab-classic">
     <label for="tab-classic">Classic (SDP)</label>
@@ -87,6 +91,20 @@
       {% include "_capabilities.html" %}
     </div>
   </section>
+
+  {% if d.fast_pair or d.fast_pair_profile %}
+    <section class="tab-panel" id="panel-fastpair">
+      <h2>Fast Pair GATT profile</h2>
+      <div id="fastpair"
+           hx-get="/api/devices/{{ d.address }}/fastpair"
+           hx-trigger="gatt-updated from:body"
+           hx-swap="innerHTML">
+        {# Rendered once for first paint; re-fetched whenever a GATT enumeration
+           persists a new tree (HX-Trigger: gatt-updated), like #capabilities. #}
+        {% include "_fastpair.html" %}
+      </div>
+    </section>
+  {% endif %}
 
   {% if d.transport == 'classic' or d.cod_label %}
     <section class="tab-panel" id="panel-classic">

@@ -68,6 +68,16 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
         return c or {"error": f"no GATT stored for {address!r} — browse it first"}
 
     @mcp.tool()
+    def fast_pair_profile(address: str) -> dict:
+        """Fast Pair GATT profile for a device (read-only): which Fast Pair
+        characteristics (…1234 Key-based Pairing, …1235 Passkey, …1236 Account Key,
+        …1237 Additional Data) are present and their props, from the stored GATT tree
+        (transmits nothing). Browse the device first to populate it."""
+        p = engine.fast_pair_profile(address)
+        return p or {"error": f"no Fast Pair (0xFE2C) service in the stored GATT for "
+                              f"{address!r} — browse it first, or not a Fast Pair Provider"}
+
+    @mcp.tool()
     def list_scan_sessions() -> list[dict]:
         """List scan sessions (read-only), newest first, with device counts."""
         return engine.list_sessions()
@@ -172,5 +182,35 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
         """ACTIVE: read the device's Classic SDP profiles over BlueZ (bluetoothctl info)
         and classify them. Pauses a running fused/classic scan for the query."""
         return engine.classic_profiles(address)
+
+    @mcp.tool()
+    def fastpair_handshake(address: str, provider_public: str = "", model_id: str = "",
+                           allow_network: bool = False) -> dict:
+        """ACTIVE: run the Fast Pair Key-based Pairing handshake on the open GATT session
+        (needs gatt_connect first). Writes an AES-encrypted Key-based Pairing request to
+        …1234 and awaits the Provider's notified response, then decrypts it.
+        Supply the Provider's anti-spoofing public key via `provider_public` (hex/base64 —
+        e.g. what `emulate.py --fast-pair-gatt` prints), or give `model_id` to resolve it
+        from fastpair_keys.yaml (and, with `allow_network`, the opt-in Google lookup).
+        A response that does not decrypt, or no notify, is a valid finding, not an error."""
+        return engine.fastpair_handshake(address, provider_public, model_id=model_id,
+                                         allow_network=allow_network)
+
+    @mcp.tool()
+    def fastpair_resolve_key(model_id: str, allow_network: bool = False) -> dict:
+        """Resolve a Fast Pair anti-spoofing PUBLIC key by Model ID. Offline file lookup
+        (`fastpair_keys.yaml`) is passive; `allow_network=True` enables an opt-in NETWORK
+        fetch from Google's device-metadata endpoint (needs $INTOTHEBLUE_FASTPAIR_API_KEY),
+        cached back to the file. Returns {model_id, public_key_hex|None, source, detail}.
+        Not a radio op."""
+        return engine.fastpair_resolve_key(model_id, allow_network)
+
+    @mcp.tool()
+    def fastpair_stress(address: str, variant: str) -> dict:
+        """ACTIVE: write a malformed Key-based Pairing payload to …1234 and report the
+        Provider's reaction (notify / silence / dropped link) — authorized robustness
+        testing. `variant` is one of: unencrypted-zero, wrong-type, too-short, too-long,
+        random-16. Needs an open GATT session (gatt_connect first)."""
+        return engine.fastpair_stress(address, variant)
 
     return mcp

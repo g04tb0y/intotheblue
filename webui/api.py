@@ -262,6 +262,39 @@ def gatt_pair(request: Request, address: str, method: str = Form("dongle")):
     return _render_gatt(request, address, error=error, action=action)
 
 
+@router.post("/api/devices/{address}/gatt/fastpair-handshake", response_class=HTMLResponse)
+def fastpair_handshake(request: Request, address: str, provider_public: str = Form(""),
+                       model_id: str = Form(""), allow_network: str = Form("")):
+    """ACTIVE: run the Fast Pair Key-based Pairing handshake on the open session.
+
+    Needs the Provider's anti-spoofing public key: paste it (hex/base64) in
+    `provider_public`, or give a `model_id` to resolve it from `fastpair_keys.yaml` (and,
+    with `allow_network`, the opt-in Google lookup). A response that does not decrypt, or
+    no notify, is reported as a finding — not an error."""
+    eng = _engine()
+    try:
+        r = eng.fastpair_handshake(address, provider_public, model_id=model_id,
+                                   allow_network=bool(allow_network))
+        error = ""
+        action = "Fast Pair handshake: " + r["detail"]
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.post("/api/devices/{address}/gatt/fastpair-stress", response_class=HTMLResponse)
+def fastpair_stress(request: Request, address: str, variant: str = Form(...)):
+    """ACTIVE: write a malformed Key-based Pairing payload and report the Provider's reaction."""
+    eng = _engine()
+    try:
+        r = eng.fastpair_stress(address, variant)
+        error = ""
+        action = f"Fast Pair stress ({r['variant']}): {r['detail']}"
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
 @router.post("/api/devices/{address}/gatt/read", response_class=HTMLResponse)
 def gatt_read(request: Request, address: str, char: str = Form(...)):
     """Read one characteristic on the open session (on demand)."""
@@ -331,6 +364,17 @@ def capabilities_view(request: Request, address: str):
     eng = _engine()
     device = eng.get_device(address)
     return _TEMPLATES.TemplateResponse(request, "_capabilities.html", {
+        "request": request, "d": device,
+    })
+
+
+# --- Fast Pair GATT profile (passive — TODO item 1) -------------------------
+@router.get("/api/devices/{address}/fastpair", response_class=HTMLResponse)
+def fast_pair_view(request: Request, address: str):
+    """Fast Pair GATT profile fragment, computed from the stored tree (passive)."""
+    eng = _engine()
+    device = eng.get_device(address)
+    return _TEMPLATES.TemplateResponse(request, "_fastpair.html", {
         "request": request, "d": device,
     })
 
