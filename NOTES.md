@@ -3,7 +3,7 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
-## Resume here — 2026-11-03, Devices list organization: recency + session filters + prune (headless-validated; HW run pending)
+## Resume here — 2026-11-03, Devices list organization: recency + session filters + prune (HARDWARE-VALIDATED)
 
 *Richiesta maintainer: lo scan salva ogni device visto subito nel `device` table (flush
 ~2 s), quindi la pagina Devices accumulava anche device di giorni fa. Serviva "prendere gli
@@ -34,7 +34,7 @@ ultimi / filtrare interattivamente / non tenere i vecchi". Scelta maintainer (mu
   hardware**: dopo un paio di scansioni reali, verificare "Current/last scan only" e la
   prune sul DB vero.
 
-## Resume here — 2026-11-03, webui single-page tab strip (supersedes the new-tab nav; headless-validated, HW run pending)
+## Resume here — 2026-11-03, webui single-page tab strip (supersedes the new-tab nav; HARDWARE-VALIDATED)
 
 *Richiesta maintainer dopo la run: il click su un device non deve aprire una **tab del
 browser** (scelta 2026-11-03, vedi sezione più sotto) ma restare dentro la stessa
@@ -67,7 +67,7 @@ in-page**.*
   commutare fra le tab mentre lo scan continua, aprire una sessione GATT in una tab e
   confermare che l'altra resti indipendente.
 
-## Resume here — 2026-11-03, webui Pair action (Connect/Pair/Disconnect done; headless-validated, HW run pending)
+## Resume here — 2026-11-03, webui Pair action (Connect/Pair/Disconnect done; HARDWARE-VALIDATED)
 
 *Chiuso il TODO "Connection-action buttons on the device detail page". Connect/Disconnect
 esistevano già come "Open interaction session"/"Close session" (riusati, label invariate su
@@ -729,6 +729,12 @@ developers.google.com/nearby/fast-pair/specifications/characteristics.
 
 ## Checkpoint
 
+- 2026-11-03: user-validated checkpoint — maintainer confirmed the webui iteration works
+  on real hardware ("testato anche con hardware"). Covers the single-page tab strip
+  (in-page device tabs via bare-mode iframe), the Devices list organization (recency
+  default 24h + current/last-scan session filters + destructive prune, MCP in parity at
+  21 tools), and the dongle-side Pair action. Committed as `2fbe3c8` and pushed to
+  `origin/devel`.
 - 2026-07-22: user-validated checkpoint ("per adesso sembra ok"). Interactive Classic
   menu (Pair + navigable SDP profiles → SPP console / PBAP), plus the system-python
   fix for the RFCOMM/D-Bus helpers. Committed and pushed to `origin/devel`.
