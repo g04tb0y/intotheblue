@@ -1,0 +1,30 @@
+{# Capability fingerprint computed from the stored GATT tree (passive — Task 2). #}
+{% if d.capabilities %}
+  <p class="muted">{{ d.capabilities.n_services }} services,
+    {{ d.capabilities.n_characteristics }} characteristics</p>
+  {% if d.capabilities.detected %}
+    <ul>
+      {% for c in d.capabilities.detected %}
+        <li><strong>{{ c.label }}</strong> — {{ c.note }}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">No known capability signatures matched.</p>
+  {% endif %}
+  {% if d.capabilities.flags %}
+    <p>Attack-surface notes:</p>
+    <ul>{% for f in d.capabilities.flags %}<li>{{ f }}</li>{% endfor %}</ul>
+  {% endif %}
+  {% if d.capabilities.dfu_exposure %}
+    <details class="gatt-svc">
+      <summary>DFU / OTA exposure verification (passive)</summary>
+      <pre>{{ d.capabilities.dfu_exposure }}</pre>
+    </details>
+  {% endif %}
+  <details class="gatt-svc">
+    <summary>Full capability report</summary>
+    <pre>{{ d.capabilities.report }}</pre>
+  </details>
+{% else %}
+  <p class="muted">No GATT tree stored yet — browse or open a session on the GATT tab first.</p>
+{% endif %}

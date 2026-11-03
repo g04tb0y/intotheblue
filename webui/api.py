@@ -9,16 +9,47 @@ engine's hardware-serialised methods.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from .engine import get_engine
 
 _TEMPLATES = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+
+
+def _localtime(epoch) -> str:
+    """Format a stored epoch (float seconds) as a readable local timestamp.
+
+    The store keeps `last_seen` as raw epoch (format only at display); an absent or
+    zero value renders blank rather than "1970-01-01".
+    """
+    try:
+        ts = float(epoch)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def _clocktime(epoch) -> str:
+    """Compact HH:MM:SS for the log tail/table (the date is usually today)."""
+    try:
+        ts = float(epoch)
+    except (TypeError, ValueError):
+        return ""
+    if ts <= 0:
+        return ""
+    return time.strftime("%H:%M:%S", time.localtime(ts))
+
+
+_TEMPLATES.env.filters["localtime"] = _localtime
+_TEMPLATES.env.filters["clocktime"] = _clocktime
 
 router = APIRouter()
 
@@ -121,10 +152,7 @@ def browse_gatt(request: Request, address: str):
         error = ""
     except Exception as err:                                    # noqa: BLE001
         error = str(err)
-    device = eng.get_device(address)
-    return _TEMPLATES.TemplateResponse(request, "_gatt_tree.html", {
-        "request": request, "d": device, "error": error,
-    })
+    return _render_gatt(request, address, error=error, tree_changed=True)
 
 
 @router.post("/api/devices/{address}/gatt/bluez", response_class=HTMLResponse)
@@ -136,10 +164,187 @@ def browse_gatt_bluez(request: Request, address: str):
         error = ""
     except Exception as err:                                    # noqa: BLE001
         error = str(err)
+    return _render_gatt(request, address, error=error, tree_changed=True)
+
+
+# --- GATT interaction session (Task 1) --------------------------------------
+def _render_gatt(request: Request, address: str, error: str = "",
+                 action: str = "", tree_changed: bool = False) -> HTMLResponse:
+    """Re-render the interactive GATT fragment with the current stored tree + session.
+
+    When `tree_changed` is set (an enumeration-changing op persisted a new tree), the
+    response carries an `HX-Trigger: gatt-updated` header so the detail page's
+    Capabilities panel — computed from the *stored* tree and rendered once at page load
+    — re-fetches itself instead of going stale until a full reload.
+    """
+    eng = _engine()
     device = eng.get_device(address)
-    return _TEMPLATES.TemplateResponse(request, "_gatt_tree.html", {
-        "request": request, "d": device, "error": error,
+    can_browse = eng.is_scanning() and eng.status()["kind"] in ("ble", "fused")
+    resp = _TEMPLATES.TemplateResponse(request, "_gatt_tree.html", {
+        "request": request, "d": device, "error": error, "action": action,
+        "can_browse": can_browse,
     })
+    if tree_changed and not error:
+        resp.headers["HX-Trigger"] = "gatt-updated"
+    return resp
+
+
+@router.post("/api/devices/{address}/gatt/session", response_class=HTMLResponse)
+def gatt_session_open(request: Request, address: str):
+    """ACTIVE: open a held-open interaction session (connect, keep the link)."""
+    eng = _engine()
+    try:
+        eng.gatt_connect(address)
+        error, action = "", "Session open — connection held for read/write/subscribe."
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action, tree_changed=True)
+
+
+@router.post("/api/devices/{address}/gatt/session/close", response_class=HTMLResponse)
+def gatt_session_close(request: Request, address: str):
+    """Close the interaction session and resume the scan."""
+    eng = _engine()
+    try:
+        eng.gatt_disconnect(address)
+        error, action = "", "Session closed — scan resumed."
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.post("/api/devices/{address}/gatt/read", response_class=HTMLResponse)
+def gatt_read(request: Request, address: str, char: str = Form(...)):
+    """Read one characteristic on the open session (on demand)."""
+    eng = _engine()
+    try:
+        r = eng.gatt_read(address, char)
+        error = ""
+        action = f"Read {char}: {r['value_hex'] or '(empty)'}"
+        if r.get("value_interp"):
+            action += f" → {r['value_interp']}"
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.post("/api/devices/{address}/gatt/write", response_class=HTMLResponse)
+def gatt_write(request: Request, address: str, char: str = Form(...),
+               value: str = Form(""), mode: str = Form("auto")):
+    """ACTIVE: write a value to one characteristic on the open session."""
+    eng = _engine()
+    try:
+        r = eng.gatt_write(address, char, value, mode)
+        error = ""
+        action = f"Wrote {r['bytes']} byte(s) to {char}: {r['wrote_hex']}"
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.post("/api/devices/{address}/gatt/subscribe", response_class=HTMLResponse)
+def gatt_subscribe(request: Request, address: str, char: str = Form(...)):
+    """ACTIVE: subscribe to notifications on one characteristic."""
+    eng = _engine()
+    try:
+        eng.gatt_subscribe(address, char)
+        error, action = "", f"Subscribed to {char} — notifications below."
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.post("/api/devices/{address}/gatt/unsubscribe", response_class=HTMLResponse)
+def gatt_unsubscribe(request: Request, address: str, char: str = Form(...)):
+    eng = _engine()
+    try:
+        eng.gatt_unsubscribe(address, char)
+        error, action = "", f"Unsubscribed from {char}."
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.get("/api/devices/{address}/gatt/notifications", response_class=HTMLResponse)
+def gatt_notifications(request: Request, address: str):
+    """Drain buffered notifications for the session (polled; appended to the log)."""
+    eng = _engine()
+    data = eng.gatt_notifications(address)
+    return _TEMPLATES.TemplateResponse(request, "_notifications.html", {
+        "request": request, "notifications": data["notifications"],
+    })
+
+
+# --- Capabilities (Task 2) --------------------------------------------------
+@router.get("/api/devices/{address}/capabilities", response_class=HTMLResponse)
+def capabilities_view(request: Request, address: str):
+    """Capability fingerprint fragment, computed from the stored GATT tree (passive)."""
+    eng = _engine()
+    device = eng.get_device(address)
+    return _TEMPLATES.TemplateResponse(request, "_capabilities.html", {
+        "request": request, "d": device,
+    })
+
+
+# --- Classic SDP profiles (Task 5) ------------------------------------------
+@router.post("/api/devices/{address}/classic", response_class=HTMLResponse)
+def classic_profiles(request: Request, address: str):
+    """ACTIVE: read SDP profiles over BlueZ (bluetoothctl info) and classify them."""
+    eng = _engine()
+    try:
+        profiles = eng.classic_profiles(address)
+        error = ""
+    except Exception as err:                                    # noqa: BLE001
+        profiles, error = None, str(err)
+    return _TEMPLATES.TemplateResponse(request, "_classic_profiles.html", {
+        "request": request, "address": address, "profiles": profiles, "error": error,
+    })
+
+
+# --- Logs (structured JSONL event history) ----------------------------------
+def _distinct_events(eng) -> list[str]:
+    """Event names seen in the log, for the filter dropdown (best-effort)."""
+    return sorted({e.get("event", "") for e in eng.query_events(limit=2000) if e.get("event")})
+
+
+@router.get("/logs", response_class=HTMLResponse)
+def logs_page(request: Request, event: str = "", device: str = "", action: str = "",
+              limit: int = 200):
+    """Browse the JSONL event history: filter by event / device / action, export."""
+    eng = _engine()
+    events = eng.query_events(event=event, device=device, action=action, limit=limit)
+    return _TEMPLATES.TemplateResponse(request, "logs.html", {
+        "request": request, "events": events, "event": event, "device": device,
+        "action": action, "limit": limit, "event_names": _distinct_events(eng),
+    })
+
+
+@router.get("/api/logs/table", response_class=HTMLResponse)
+def logs_table(request: Request, event: str = "", device: str = "", action: str = "",
+               limit: int = 200):
+    eng = _engine()
+    events = eng.query_events(event=event, device=device, action=action, limit=limit)
+    return _TEMPLATES.TemplateResponse(request, "_logs_table.html", {
+        "request": request, "events": events,
+    })
+
+
+@router.get("/api/logs/tail", response_class=HTMLResponse)
+def logs_tail(request: Request):
+    """The always-on footer tail — the most recent events, oldest-first."""
+    return _TEMPLATES.TemplateResponse(request, "_log_tail.html", {
+        "request": request, "events": _engine().tail_events(10),
+    })
+
+
+@router.get("/api/logs/export")
+def logs_export(event: str = "", device: str = "", action: str = "", limit: int = 10000):
+    """Download the filtered event set as JSON Lines (one object per line)."""
+    events = _engine().query_events(event=event, device=device, action=action, limit=limit)
+    body = "\n".join(json.dumps(e, default=str) for e in events) + ("\n" if events else "")
+    fname = f"intotheblue_events_{int(time.time())}.jsonl"
+    return Response(content=body, media_type="application/x-ndjson",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # --- JSON API (parity with the MCP read tools) ------------------------------

@@ -1,6 +1,35 @@
+{% set session = d.gatt_session and d.gatt_session.open and d.gatt_session.address == d.address %}
 {% if error is defined and error %}
   <p class="error">⚠ {{ error }}</p>
 {% endif %}
+{% if action is defined and action %}
+  <p class="action-msg">{{ action }}</p>
+{% endif %}
+
+{# Connect controls: a one-shot browse, or a held-open interaction session. #}
+{% if can_browse and not session %}
+  <div class="gatt-actions">
+    <form hx-post="/api/devices/{{ d.address }}/gatt" hx-target="#gatt" hx-swap="innerHTML"
+          hx-indicator="#gatt-spinner" hx-disabled-elt="this" style="display:inline">
+      <button type="submit">Browse GATT (one-shot)</button>
+      <span class="muted badge active">ACTIVE: connects, reads readable chars, disconnects.</span>
+    </form>
+    <form hx-post="/api/devices/{{ d.address }}/gatt/session" hx-target="#gatt" hx-swap="innerHTML"
+          hx-indicator="#gatt-spinner" hx-disabled-elt="this" style="display:inline">
+      <button type="submit">Open interaction session</button>
+      <span class="muted badge active">ACTIVE: keeps the link open for read/write/subscribe.</span>
+    </form>
+    <span id="gatt-spinner" class="htmx-indicator spinner">⏳ connecting… (pauses the scan)</span>
+  </div>
+{% elif session %}
+  <div class="gatt-actions">
+    <span class="badge active">Interaction session open</span>
+    <form hx-post="/api/devices/{{ d.address }}/gatt/session/close" hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+      <button type="submit">Close session</button>
+    </form>
+  </div>
+{% endif %}
+
 {% if d and d.gatt_partial %}
   <div class="warn">
     <p>⚠ Could not enumerate all GATT: {{ d.gatt_incomplete|length }}
@@ -8,19 +37,39 @@
       (<code>{{ d.gatt_incomplete|join(', ') }}</code>). blatann's characteristic
       discovery hit NrfError.invalid_state on these.</p>
     <form hx-post="/api/devices/{{ d.address }}/gatt/bluez"
-          hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+          hx-target="#gatt" hx-swap="innerHTML"
+          hx-indicator="#bluez-spinner" hx-disabled-elt="this" style="display:inline">
       <button type="submit">Enumerate via BlueZ (hci0)</button>
-      <span class="muted">connects over the host adapter, independent of the dongle;
-        takes ~15 s</span>
+      <span class="muted badge active">connects over the host adapter, independent of the
+        dongle; takes ~15 s</span>
+      <span id="bluez-spinner" class="htmx-indicator spinner">⏳ enumerating over hci0…</span>
     </form>
   </div>
 {% endif %}
+
 {% if d and d.gatt %}
+  {# Nordic UART serial console (write RX, read responses via the TX notification log). #}
+  {% set nus = namespace(found=false) %}
+  {% for svc in d.gatt %}{% if svc.uuid|lower == '6e400001-b5a3-f393-e0a9-e50e24dcca9e' %}{% set nus.found = true %}{% endif %}{% endfor %}
+  {% if session and nus.found %}
+    <div class="nus-console">
+      <strong>Nordic UART console</strong>
+      <form hx-post="/api/devices/{{ d.address }}/gatt/write" hx-target="#gatt" hx-swap="innerHTML">
+        <input type="hidden" name="char" value="6e400002-b5a3-f393-e0a9-e50e24dcca9e">
+        <input type="hidden" name="mode" value="auto">
+        <input type="text" name="value" placeholder="line to send (hex:.. / text:.. / auto)">
+        <button type="submit" class="active">Send</button>
+      </form>
+      <span class="muted">Subscribe the TX characteristic (…0003) below to see responses.</span>
+    </div>
+  {% endif %}
+
   {% for svc in d.gatt %}
     <details open class="gatt-svc">
       <summary>{{ svc.uuid }}{% if svc.name %} — {{ svc.name }}{% endif %}</summary>
       <table class="grid">
-        <thead><tr><th>UUID</th><th>Name</th><th>Props</th><th>Value</th></tr></thead>
+        <thead><tr><th>UUID</th><th>Name</th><th>Props</th><th>Value</th>
+          {% if session %}<th>Actions</th>{% endif %}</tr></thead>
         <tbody>
           {% for ch in svc.characteristics %}
             <tr>
@@ -31,12 +80,53 @@
                 {% if ch.value_hex %}<code>{{ ch.value_hex }}</code>{% endif %}
                 {% if ch.value_interp %}<br><span class="muted">→ {{ ch.value_interp }}</span>{% endif %}
               </td>
+              {% if session %}
+                <td class="char-actions">
+                  {% if 'R' in ch.props %}
+                    <form hx-post="/api/devices/{{ d.address }}/gatt/read" hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+                      <input type="hidden" name="char" value="{{ ch.uuid }}">
+                      <button type="submit">Read</button>
+                    </form>
+                  {% endif %}
+                  {% if 'W' in ch.props %}
+                    <form hx-post="/api/devices/{{ d.address }}/gatt/write" hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+                      <input type="hidden" name="char" value="{{ ch.uuid }}">
+                      <input type="text" name="value" size="10" placeholder="value">
+                      <select name="mode"><option value="auto">auto</option><option value="hex">hex</option><option value="text">text</option></select>
+                      <button type="submit" class="active">Write</button>
+                    </form>
+                  {% endif %}
+                  {% if 'N' in ch.props %}
+                    {% if ch.uuid|lower in d.gatt_session.subscribed %}
+                      <form hx-post="/api/devices/{{ d.address }}/gatt/unsubscribe" hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+                        <input type="hidden" name="char" value="{{ ch.uuid }}">
+                        <button type="submit">Unsubscribe</button>
+                      </form>
+                    {% else %}
+                      <form hx-post="/api/devices/{{ d.address }}/gatt/subscribe" hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+                        <input type="hidden" name="char" value="{{ ch.uuid }}">
+                        <button type="submit" class="active">Subscribe</button>
+                      </form>
+                    {% endif %}
+                  {% endif %}
+                </td>
+              {% endif %}
             </tr>
           {% endfor %}
         </tbody>
       </table>
     </details>
   {% endfor %}
+
+  {# Live notification log — polled only while at least one characteristic is subscribed. #}
+  {% if session and d.gatt_session.subscribed %}
+    <div class="notif-box">
+      <strong>Notifications</strong>
+      <ul id="notif-log"
+          hx-get="/api/devices/{{ d.address }}/gatt/notifications"
+          hx-trigger="load, every 1s" hx-swap="beforeend"></ul>
+    </div>
+  {% endif %}
 {% else %}
   <p class="muted">No GATT discovered yet.</p>
 {% endif %}

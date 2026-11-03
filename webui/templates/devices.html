@@ -24,12 +24,12 @@ exposure and GATT.</p>
     <tr>
       <th>Address</th><th>Name</th><th>Transport</th><th>Addr</th>
       <th>Vendor / Mfr</th><th>Type</th><th>FastPair</th><th>Target</th>
-      <th>Conn</th><th>RSSI</th><th>Seen</th>
+      <th>Conn</th><th>RSSI</th><th>Last seen</th>
     </tr>
   </thead>
   <tbody>
     {% for d in devices %}
-      <tr onclick="window.location='/devices/{{ d.address }}'" class="clickable">
+      <tr onclick="window.open('/devices/{{ d.address }}', '_blank')" class="clickable">
         <td>{{ d.address }}</td>
         <td>{{ d.name or '' }}</td>
         <td>{{ d.transport or '' }}</td>
@@ -40,7 +40,7 @@ exposure and GATT.</p>
         <td>{% if d.target %}<span class="badge target">{{ d.target }}</span>{% endif %}</td>
         <td>{% if d.connectable == 1 %}Yes{% elif d.connectable == 0 %}no{% else %}?{% endif %}</td>
         <td>{{ d.rssi or '' }}</td>
-        <td class="muted">{{ d.last_seen|int }}</td>
+        <td class="muted">{{ d.last_seen|localtime }}</td>
       </tr>
     {% else %}
       <tr><td colspan="11" class="muted">No devices yet — run a scan.</td></tr>

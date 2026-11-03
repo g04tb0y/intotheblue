@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Logs · intotheblue{% endblock %}
+{% block content %}
+<h1>Event log <span class="muted">({{ events|length }})</span></h1>
+<p class="muted">Structured JSONL history of every radio operation (scans, connects,
+reads/writes/subscribes, BlueZ enumerate, Classic SDP) with its outcome. Passive reads
+of the DB are not logged here — only operations that touch the hardware.</p>
+
+<form method="get" action="/logs" class="filters">
+  <select name="event">
+    <option value="">any event</option>
+    {% for name in event_names %}
+      <option value="{{ name }}" {% if event == name %}selected{% endif %}>{{ name }}</option>
+    {% endfor %}
+  </select>
+  <input type="text" name="device" value="{{ device }}" placeholder="device address">
+  <input type="text" name="action" value="{{ action }}" placeholder="action contains…">
+  <input type="number" name="limit" value="{{ limit }}" min="1" max="10000" style="width:6em">
+  <button type="submit">Filter</button>
+  <a class="button"
+     href="/api/logs/export?event={{ event }}&device={{ device }}&action={{ action }}&limit={{ limit }}">
+    Export JSONL</a>
+</form>
+
+<div id="logs-table"
+     hx-get="/api/logs/table?event={{ event }}&device={{ device }}&action={{ action }}&limit={{ limit }}"
+     hx-trigger="every 5s"
+     hx-swap="innerHTML">
+  {% include "_logs_table.html" %}
+</div>
+{% endblock %}

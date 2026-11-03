@@ -339,7 +339,8 @@ class ClassicScanner:
         with self._lock, open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
-            for d in sorted(self.devices.values(), key=lambda r: r.rssi, reverse=True):
+            # Discovery order (dict insertion order) to match the on-screen table.
+            for d in self.devices.values():
                 writer.writerow([func(d) for _, _, func in columns] + self._extra_csv_row(d))
         return path
 

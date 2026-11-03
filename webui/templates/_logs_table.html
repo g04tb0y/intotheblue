@@ -1,0 +1,24 @@
+{# Rows of the event history. Reused by the Logs page and its HTMX refresh. #}
+<table class="grid">
+  <thead>
+    <tr>
+      <th>Time</th><th>Event</th><th>Outcome</th><th>Device</th>
+      <th>Transport</th><th>Boundary</th><th>Action / Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in events %}
+      <tr class="log-{{ e.outcome }}">
+        <td class="muted">{{ e.ts|localtime }}</td>
+        <td>{{ e.event }}</td>
+        <td><span class="badge log-outcome {{ e.outcome }}">{{ e.outcome }}</span></td>
+        <td>{% if e.device %}<a href="/devices/{{ e.device }}">{{ e.device }}</a>{% endif %}</td>
+        <td class="muted">{{ e.transport or '' }}</td>
+        <td><span class="badge {{ e.boundary }}">{{ e.boundary }}</span></td>
+        <td>{% if e.error %}<span class="error">{{ e.error }}</span>{% else %}{{ e.action or '' }}{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">No events match.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>

@@ -1,0 +1,15 @@
+{# Compact tail for the always-on footer; most recent events, oldest-first. #}
+{% if events %}
+  {% for e in events %}
+    <span class="log-line log-{{ e.outcome }} {{ e.boundary }}">
+      <span class="muted">{{ e.ts|clocktime }}</span>
+      <b>{{ e.event }}</b>
+      <span class="log-outcome {{ e.outcome }}">{{ e.outcome }}</span>
+      {% if e.device %}<span class="muted">{{ e.device }}</span>{% endif %}
+      {% if e.error %}<span class="error">{{ e.error|truncate(60) }}</span>{% endif %}
+    </span>
+  {% endfor %}
+{% else %}
+  <span class="muted">no activity yet</span>
+{% endif %}
+<a class="muted log-more" href="/logs">more →</a>

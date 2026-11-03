@@ -194,7 +194,8 @@ class FusedScanner:
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
-            for d in sorted(self.snapshot(), key=lambda r: r.rssi, reverse=True):
+            # Discovery order (snapshot order) to match the on-screen table.
+            for d in self.snapshot():
                 writer.writerow([fn(d) for _, _, fn in COLUMNS]
                                 + ["yes" if is_fast_pair(d) else "",
                                    " ".join(sorted(d.services)),

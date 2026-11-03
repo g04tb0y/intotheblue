@@ -1,8 +1,9 @@
 """Live BLE scan: full-screen table that updates continuously.
 
 The dongle scans continuously (restarting scan chunks); every advertising packet
-updates a per-address record. The screen shows a table sorted by RSSI and, at the
-bottom, a status bar with the commands:
+updates a per-address record. The screen shows a table in discovery order (rows do
+not re-sort, so selection doesn't jump) and, at the bottom, a status bar with the
+commands:
 
     ^P  pause/resume scan      ^S  save to CSV      Q  quit
 
@@ -323,7 +324,8 @@ class LiveScanner:
         with self._lock, open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(headers)
-            for d in sorted(self.devices.values(), key=lambda r: r.rssi, reverse=True):
+            # Discovery order (dict insertion order) to match the on-screen table.
+            for d in self.devices.values():
                 row = [func(d) for _, _, func in COLUMNS]
                 row.append(";".join(sorted(d.services)))
                 row.append(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(d.first_seen)))

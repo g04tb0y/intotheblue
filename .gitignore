@@ -9,6 +9,9 @@ csv/
 # SQLite persistence (ricreabile; scansioni/GATT salvati dal web/MCP)
 db/
 
+# Structured event log (JSONL, ricreabile; attività radio tracciata da engine)
+logs/
+
 # Cache Python
 __pycache__/
 *.pyc

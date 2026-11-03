@@ -371,6 +371,32 @@ class Store:
             self._conn.execute(sql, (name, address))
             self._conn.commit()
 
+    def update_char_value(self, address: str, char_uuid: str,
+                          value_hex: str, value_interp: str) -> None:
+        """Update one characteristic's cached value in the stored GATT tree.
+
+        Used by an on-demand read in an interaction session (`engine.gatt_read`): the
+        tree structure is already persisted, so only the value cells change. Matches
+        on the characteristic UUID across the device's services (UUIDs are unique
+        enough per device for this cache); no-op if the tree has not been stored yet.
+        """
+        address = normalize_address(address)
+        target = str(char_uuid).lower()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT c.id, c.uuid FROM gatt_characteristic c "
+                "JOIN gatt_service s ON c.service_id = s.id WHERE s.address = ?",
+                (address,),
+            ).fetchall()
+            for r in rows:
+                if str(r["uuid"]).lower() == target:
+                    self._conn.execute(
+                        "UPDATE gatt_characteristic SET value_hex = ?, value_interp = ? "
+                        "WHERE id = ?",
+                        (value_hex, value_interp, r["id"]),
+                    )
+            self._conn.commit()
+
     def get_gatt(self, address: str) -> list[dict]:
         address = normalize_address(address)
         with self._lock:

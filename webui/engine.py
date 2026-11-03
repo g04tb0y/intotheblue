@@ -22,11 +22,14 @@ dongle/adapter is touched only when a scan or a GATT browse actually starts.
 """
 from __future__ import annotations
 
+import contextlib
 import threading
 import time
+from types import SimpleNamespace
 
 import capabilities
 import client
+import eventlog as eventlog_module
 import exposure
 import gatt_bluez
 import scan_classic
@@ -47,8 +50,9 @@ _BLE_KINDS = {"ble", "fused"}
 class Engine:
     """Owns the active scanner and serialises all hardware access."""
 
-    def __init__(self, store=None):
+    def __init__(self, store=None, events=None):
         self._store = store or store_module.get_store()
+        self._events = events or eventlog_module.get_eventlog()
         self._lock = threading.Lock()           # serialises start/stop/browse
         self._scanner = None
         self._kind: str | None = None
@@ -56,6 +60,18 @@ class Engine:
         self._flush_stop: threading.Event | None = None
         self._flush_thread: threading.Thread | None = None
         self._last_error = ""
+        # Held-open GATT interaction session (Task 1): the dongle cannot scan and
+        # connect at once, so a session pauses the scan and keeps ONE peer connected
+        # across read/write/subscribe requests instead of reconnecting per operation.
+        self._gatt_addr: str | None = None
+        self._gatt_peer = None                   # the connected blatann peer
+        self._gatt_notifs: dict[str, list[dict]] = {}   # char uuid -> buffered notifications
+        self._gatt_subscribed: set[str] = set()  # char uuids currently subscribed
+        self._gatt_deadline: float = 0.0         # idle auto-close time (monotonic-ish)
+
+    # Idle timeout for a held-open GATT session: a session pins the scan paused and
+    # holds an LE link, so it must not leak if the browser tab is closed mid-session.
+    GATT_SESSION_IDLE = 60.0
 
     # --- introspection -----------------------------------------------------
     @property
@@ -84,12 +100,48 @@ class Engine:
             "last_error": self._last_error,
         }
 
+    # --- structured event log ----------------------------------------------
+    @contextlib.contextmanager
+    def _op_log(self, event: str, *, device: str = "", boundary: str = "active",
+                transport: str | None = None, start: bool = False, **detail):
+        """Wrap a hardware operation so the event log records its outcome.
+
+        Emits `outcome="ok"` on normal exit and `outcome="error"` (with the message)
+        on exception, then re-raises — the engine is the single point that serialises
+        every radio op, so it is the natural emission point. `start=True` also emits an
+        `outcome="start"` on entry, so the live tail shows a long op the moment it begins.
+        """
+        tr = transport if transport is not None else self._kind
+        if start:
+            self._events.emit(event, device=device, transport=tr, boundary=boundary,
+                              outcome="start", **detail)
+        try:
+            yield
+        except Exception as err:                                # noqa: BLE001
+            self._events.emit(event, device=device, transport=tr, boundary=boundary,
+                              outcome="error", error=str(err), **detail)
+            raise
+        else:
+            self._events.emit(event, device=device, transport=tr, boundary=boundary,
+                              outcome="ok", **detail)
+
+    def query_events(self, event: str = "", device: str = "", action: str = "",
+                     limit: int = 200) -> list[dict]:
+        """Filtered event history (read-only): by exact `event`, `device`, or `action`
+        substring, newest first. Reused by the webui Logs page and the MCP tool."""
+        return self._events.read(event=event or None, device=device or None,
+                                 action=action or None, limit=limit)
+
+    def tail_events(self, n: int = 8) -> list[dict]:
+        """The most recent `n` events, oldest-first (for the always-on log footer)."""
+        return self._events.tail(n)
+
     # --- scan lifecycle ----------------------------------------------------
     def start_scan(self, kind: str) -> dict:
         """Open the chosen backend and begin scanning. One scan at a time."""
         if kind not in _KINDS:
             raise ValueError(f"unknown scan kind: {kind!r} (expected one of {list(_KINDS)})")
-        with self._lock:
+        with self._op_log("scan_start", action=kind, transport=kind), self._lock:
             if self._scanner is not None:
                 raise RuntimeError(f"a '{self._kind}' scan is already running — stop it first")
             self._last_error = ""
@@ -119,9 +171,10 @@ class Engine:
         return sc
 
     def stop_scan(self) -> dict:
-        with self._lock:
+        with self._op_log("scan_stop", action=self._kind or ""), self._lock:
             if self._scanner is None:
                 return self.status()
+            self._gatt_teardown()               # close any held-open GATT session first
             self._stop_flush()
             self._flush_once(self._scanner, self._session_id)   # final snapshot
             try:
@@ -178,6 +231,13 @@ class Engine:
         while not stop.is_set():
             stop.wait(2.0)
             self._flush_once(scanner, session_id, kind)
+            # Watchdog: auto-close a GATT session left idle (tab closed mid-session),
+            # which would otherwise pin the scan paused and leak the LE link.
+            if self._gatt_peer is not None and time.time() > self._gatt_deadline:
+                try:
+                    self.gatt_disconnect(self._gatt_addr or "")
+                except Exception as err:                        # noqa: BLE001
+                    self._last_error = f"gatt idle-close: {err}"
 
     def _flush_once(self, scanner, session_id, kind: str | None = None) -> int:
         """Upsert every currently-known record into the store. Best-effort."""
@@ -202,24 +262,268 @@ class Engine:
         backend that performs a GATT connection here.
         """
         address = store_module.normalize_address(address)
+        with self._op_log("browse_gatt", device=address, action="one-shot", start=True):
+            with self._lock:
+                if self._scanner is None:
+                    raise RuntimeError("no scan running — start a BLE scan first")
+                if self._kind not in _BLE_KINDS:
+                    raise RuntimeError("GATT browse needs the BLE dongle (start a 'ble' or 'fused' scan)")
+                self._gatt_teardown()   # a one-shot browse supersedes any held-open session
+                ble_device, peer = self._dongle_and_peer(address)
+                if peer is None:
+                    raise RuntimeError(f"{address} not currently seen by the dongle "
+                                       "(it may have rotated its address or moved out of range)")
+                self._scanner.pause()
+                try:
+                    result = self._discover(ble_device, peer)
+                finally:
+                    self._scanner.resume()
+            self._store.save_gatt(address, result["gatt"], self._session_id)
+            if result.get("device_name"):
+                self._store.set_name(address, result["device_name"])
+            return result
+
+    # --- held-open GATT interaction session (Task 1) -----------------------
+    def gatt_session(self) -> dict:
+        """Current interaction-session state (for the UI/MCP): which device, which
+        characteristics are subscribed. `open` means a peer is held connected."""
+        return {
+            "address": self._gatt_addr,
+            "open": self._gatt_peer is not None,
+            "connected": bool(self._gatt_peer is not None
+                              and getattr(self._gatt_peer, "connected", False)),
+            "subscribed": sorted(self._gatt_subscribed),
+        }
+
+    def gatt_connect(self, address: str) -> dict:
+        """Open a held-open interaction session: pause the scan, connect, keep the link.
+
+        Unlike `browse_gatt` (one-shot connect→read→disconnect), this keeps the peer
+        connected across later read/write/subscribe requests — the dongle cannot scan
+        and connect at once, so the scan stays paused until `gatt_disconnect` (or the
+        idle watchdog) closes the session. Persists the discovered tree and backfills
+        the GATT Device Name, exactly like `browse_gatt`.
+        """
+        address = store_module.normalize_address(address)
+        with self._op_log("gatt_connect", device=address, action="session open", start=True):
+            with self._lock:
+                if self._scanner is None:
+                    raise RuntimeError("no scan running — start a BLE scan first")
+                if self._kind not in _BLE_KINDS:
+                    raise RuntimeError("GATT interaction needs the BLE dongle "
+                                       "(start a 'ble' or 'fused' scan)")
+                if self._gatt_peer is not None:
+                    if self._gatt_addr == address:
+                        self._touch_session()           # already open on this device
+                        return self.gatt_session()
+                    self._gatt_teardown()                # a session for another device
+                ble_device, peer = self._dongle_and_peer(address)
+                if peer is None:
+                    raise RuntimeError(f"{address} not currently seen by the dongle "
+                                       "(it may have rotated its address or moved out of range)")
+                self._scanner.pause()
+                conn = None
+                try:
+                    conn = self._connect(ble_device, peer)
+                    self._guard_services(conn)
+                    result = self._tree_from_peer(conn)
+                except Exception:
+                    if conn is not None:
+                        try:
+                            conn.disconnect().wait(5, exception_on_timeout=False)
+                        except Exception:
+                            pass
+                    self._scanner.resume()               # no session to hold it paused
+                    raise
+                self._gatt_addr = address
+                self._gatt_peer = conn
+                self._gatt_notifs = {}
+                self._gatt_subscribed = set()
+                self._touch_session()
+            self._store.save_gatt(address, result["gatt"], self._session_id)
+            if result.get("device_name"):
+                self._store.set_name(address, result["device_name"])
+            return self.gatt_session()
+
+    def gatt_read(self, address: str, char_uuid: str) -> dict:
+        """Read one characteristic on the open session; persist the fresh value."""
+        address = store_module.normalize_address(address)
+        with self._op_log("gatt_read", device=address, action=char_uuid):
+            with self._lock:
+                conn = self._require_session(address)
+                ch = self._find_char(conn, char_uuid)
+                if ch is None:
+                    raise RuntimeError(f"characteristic {char_uuid} not found in the session")
+                if not ch.readable:
+                    raise RuntimeError("characteristic is not readable")
+                try:
+                    _c, ev = ch.read().wait(5, exception_on_timeout=False)
+                except Exception as err:                        # noqa: BLE001
+                    raise RuntimeError(f"read failed: {err}")
+                if ev is None or getattr(ev, "value", None) is None:
+                    raise RuntimeError("read failed/timed out")
+                val_hex = ev.value.hex()
+                interp = client._interpret(ch.uuid, ev.value) or ""
+                self._touch_session()
+            self._store.update_char_value(address, char_uuid, val_hex, interp)
+            return {"uuid": char_uuid, "value_hex": val_hex, "value_interp": interp}
+
+    def gatt_write(self, address: str, char_uuid: str, value: str, mode: str = "auto") -> dict:
+        """ACTIVE: write a value to one characteristic on the open session.
+
+        `mode` is hex | text | auto; the value is parsed with `client._parse_write_value`
+        so the web/MCP write path matches the CLI exactly.
+        """
+        address = store_module.normalize_address(address)
+        with self._op_log("gatt_write", device=address, action=char_uuid):
+            with self._lock:
+                conn = self._require_session(address)
+                ch = self._find_char(conn, char_uuid)
+                if ch is None:
+                    raise RuntimeError(f"characteristic {char_uuid} not found in the session")
+                if not (ch.writable or ch.writable_without_response):
+                    raise RuntimeError("characteristic is not writable")
+                try:
+                    data = self._parse_write(value, mode)
+                except ValueError:
+                    raise RuntimeError("invalid hex value")
+                ok = client.write_char_value(ch, data)
+                self._touch_session()
+            if not ok:
+                raise RuntimeError("write failed/timed out")
+            return {"uuid": char_uuid, "wrote_hex": data.hex(), "bytes": len(data)}
+
+    def gatt_subscribe(self, address: str, char_uuid: str) -> dict:
+        """Subscribe to notifications on one characteristic; they buffer for polling."""
+        address = store_module.normalize_address(address)
+        with self._op_log("gatt_subscribe", device=address, action=char_uuid):
+            with self._lock:
+                conn = self._require_session(address)
+                ch = self._find_char(conn, char_uuid)
+                if ch is None:
+                    raise RuntimeError(f"characteristic {char_uuid} not found in the session")
+                if not ch.subscribable:
+                    raise RuntimeError("characteristic is not notifiable")
+                key = str(ch.uuid).lower()
+                if key not in self._gatt_subscribed:
+                    self._gatt_notifs.setdefault(key, [])
+
+                    def _on_notify(c, e, _key=key):
+                        # Runs on blatann's event thread. `list.append` is atomic under
+                        # the GIL, and the poller swaps the list rather than mutating it.
+                        val = getattr(e, "value", None)
+                        if val is None:
+                            return
+                        self._gatt_notifs.setdefault(_key, []).append({
+                            "ts": time.time(), "hex": val.hex(),
+                            "interp": client._interpret(c.uuid, val) or "",
+                        })
+
+                    ch.subscribe(_on_notify).wait(5, exception_on_timeout=False)
+                    self._gatt_subscribed.add(key)
+                self._touch_session()
+            return {"uuid": char_uuid, "subscribed": True}
+
+    def gatt_unsubscribe(self, address: str, char_uuid: str) -> dict:
+        address = store_module.normalize_address(address)
+        with self._op_log("gatt_unsubscribe", device=address, action=char_uuid):
+            with self._lock:
+                conn = self._require_session(address)
+                ch = self._find_char(conn, char_uuid)
+                key = str(ch.uuid).lower() if ch is not None else char_uuid.lower()
+                if ch is not None and key in self._gatt_subscribed:
+                    try:
+                        ch.unsubscribe()
+                    except Exception:                           # noqa: BLE001
+                        pass
+                self._gatt_subscribed.discard(key)
+                self._touch_session()
+            return {"uuid": char_uuid, "subscribed": False}
+
+    def gatt_notifications(self, address: str) -> dict:
+        """Drain buffered notifications for the open session (consumed on read).
+
+        Returns only notifications arrived since the last call, so the page can append
+        them to a log via HTMX `hx-swap="beforeend"` polling.
+        """
+        address = store_module.normalize_address(address)
         with self._lock:
-            if self._scanner is None:
-                raise RuntimeError("no scan running — start a BLE scan first")
-            if self._kind not in _BLE_KINDS:
-                raise RuntimeError("GATT browse needs the BLE dongle (start a 'ble' or 'fused' scan)")
-            ble_device, peer = self._dongle_and_peer(address)
-            if peer is None:
-                raise RuntimeError(f"{address} not currently seen by the dongle "
-                                   "(it may have rotated its address or moved out of range)")
-            self._scanner.pause()
+            if self._gatt_peer is None or self._gatt_addr != address:
+                return {"open": False, "subscribed": [], "notifications": []}
+            out = []
+            for key in sorted(self._gatt_subscribed):
+                buf = self._gatt_notifs.get(key, [])
+                self._gatt_notifs[key] = []                     # swap: new appends go here
+                out.extend({"uuid": key, **n} for n in buf)
+            out.sort(key=lambda n: n["ts"])
+            self._touch_session()
+            return {"open": True, "subscribed": sorted(self._gatt_subscribed),
+                    "notifications": out}
+
+    def gatt_disconnect(self, address: str = "") -> dict:
+        """Close the held-open session: unsubscribe, disconnect, resume the scan."""
+        with self._op_log("gatt_disconnect", device=address, action="session close"):
+            with self._lock:
+                self._gatt_teardown()
+            return self.gatt_session()
+
+    # --- session helpers ---------------------------------------------------
+    def _require_session(self, address: str):
+        """The connected peer for an open session on `address`, or raise. Lock held."""
+        address = store_module.normalize_address(address)
+        if self._gatt_peer is None:
+            raise RuntimeError("no GATT session open — connect first")
+        if self._gatt_addr != address:
+            raise RuntimeError(f"the open GATT session is for {self._gatt_addr}, not {address}")
+        if not getattr(self._gatt_peer, "connected", False):
+            raise RuntimeError("the GATT session's connection dropped — close and reconnect")
+        return self._gatt_peer
+
+    def _touch_session(self) -> None:
+        self._gatt_deadline = time.time() + self.GATT_SESSION_IDLE
+
+    @staticmethod
+    def _parse_write(value: str, mode: str) -> bytes:
+        if mode == "hex":
+            return client._parse_write_value("hex:" + value)
+        if mode == "text":
+            return client._parse_write_value("text:" + value)
+        return client._parse_write_value(value)
+
+    @staticmethod
+    def _find_char(conn, char_uuid: str):
+        target = str(char_uuid).lower()
+        for svc in conn.database.services:
+            for ch in svc.characteristics:
+                if str(ch.uuid).lower() == target:
+                    return ch
+        return None
+
+    def _gatt_teardown(self) -> None:
+        """Tear down a held-open session and resume the scan it paused. Lock held."""
+        if self._gatt_peer is None:
+            return
+        peer = self._gatt_peer
+        for key in list(self._gatt_subscribed):
+            ch = self._find_char(peer, key)
+            if ch is not None:
+                try:
+                    ch.unsubscribe()
+                except Exception:                               # noqa: BLE001
+                    pass
+        try:
+            peer.disconnect().wait(5, exception_on_timeout=False)
+        except Exception:                                       # noqa: BLE001
+            pass
+        self._gatt_peer = None
+        self._gatt_addr = None
+        self._gatt_notifs = {}
+        self._gatt_subscribed = set()
+        if self._scanner is not None:
             try:
-                result = self._discover(ble_device, peer)
-            finally:
                 self._scanner.resume()
-        self._store.save_gatt(address, result["gatt"], self._session_id)
-        if result.get("device_name"):
-            self._store.set_name(address, result["device_name"])
-        return result
+            except Exception:                                   # noqa: BLE001
+                pass
 
     def browse_gatt_bluez(self, address: str) -> dict:
         """Enumerate GATT over the host BlueZ adapter (hci0), independent of the dongle.
@@ -231,21 +535,23 @@ class Engine:
         scan is paused for it (it also uses hci0); a dongle-only scan is left untouched.
         """
         address = store_module.normalize_address(address)
-        with self._lock:
-            paused = False
-            if self._scanner is not None and self._kind in ("fused", "classic"):
-                self._scanner.pause()
-                paused = True
-            try:
-                result = gatt_bluez.enumerate(address)
-            finally:
-                if paused:
-                    self._scanner.resume()
-        if result.get("error") and not result.get("gatt"):
-            raise RuntimeError(result["error"])
-        merged = self._merge_gatt(self._store.get_gatt(address), result["gatt"])
-        self._store.save_gatt(address, merged, self._session_id)
-        return {"gatt": merged, "error": result.get("error", ""), "source": "bluez"}
+        with self._op_log("browse_gatt_bluez", device=address, transport="bluez",
+                          action="hci0 enumerate", start=True):
+            with self._lock:
+                paused = False
+                if self._scanner is not None and self._kind in ("fused", "classic"):
+                    self._scanner.pause()
+                    paused = True
+                try:
+                    result = gatt_bluez.enumerate(address)
+                finally:
+                    if paused:
+                        self._scanner.resume()
+            if result.get("error") and not result.get("gatt"):
+                raise RuntimeError(result["error"])
+            merged = self._merge_gatt(self._store.get_gatt(address), result["gatt"])
+            self._store.save_gatt(address, merged, self._session_id)
+            return {"gatt": merged, "error": result.get("error", ""), "source": "bluez"}
 
     @staticmethod
     def _svc_key(uuid: str) -> str:
@@ -354,64 +660,86 @@ class Engine:
                 "it a few seconds idle), then retry Browse GATT.")
         raise RuntimeError(f"connection failed: {last}")
 
+    @staticmethod
+    def _guard_services(conn) -> None:
+        """Ensure discovery populated services, else raise a clear, actionable error.
+
+        A dropped link during discovery leaves no services and makes every read time
+        out (5 s each). blatann logs the driver-thread cause as NrfError.invalid_state
+        on characteristic discovery — detect it here and fail clearly rather than
+        persist an empty tree over good data. The blatann workaround
+        (`webui.blatann_patch`) finalises discovery with partial results instead of
+        wedging, so an empty database is now the genuine "nothing discoverable" case.
+        An invalid_state can also be transient, so give discovery one more pass first.
+        """
+        if not conn.database.services and conn.connected:
+            conn.discover_services().wait(10, exception_on_timeout=False)
+        if conn.database.services:
+            return
+        if conn.connected:
+            raise RuntimeError(
+                "GATT discovery populated no services (peer still connected) "
+                "even after a retry and the blatann partial-discovery "
+                "workaround. This device's GATT does not enumerate over the "
+                "dongle in this setup. If the transport then stops responding, "
+                "Stop→Start the scan to reopen the dongle.")
+        raise RuntimeError(
+            "GATT discovery returned no services — the peer disconnected "
+            "during discovery. Bring it closer / keep it awake and retry.")
+
+    def _tree_from_peer(self, conn) -> dict:
+        """Build the GATT tree + capability report from a connected, discovered peer.
+
+        Reads every readable characteristic (skipping reads once the link is gone, so
+        they don't each block 5 s). Does NOT disconnect — shared by the one-shot
+        `browse_gatt` and the held-open interaction session, which owns the teardown.
+        """
+        tree = []
+        device_name = ""
+        for svc in conn.database.services:
+            node = {
+                "uuid": str(svc.uuid),
+                "name": client.name_for_uuid(svc.uuid) or "",
+                "characteristics": [],
+            }
+            for ch in svc.characteristics:
+                val_hex, interp = "", ""
+                if ch.readable and conn.connected:
+                    try:
+                        _c, ev = ch.read().wait(5, exception_on_timeout=False)
+                    except Exception:                           # noqa: BLE001
+                        ev = None
+                    if ev is not None and getattr(ev, "value", None) is not None:
+                        val_hex = ev.value.hex()
+                        interp = client._interpret(ch.uuid, ev.value) or ""
+                        # GATT Device Name (0x2A00) — the only name some devices expose
+                        # (they advertise none); backfill it on the record.
+                        if client._u16(ch.uuid) == 0x2A00:
+                            device_name = ev.value.decode("utf-8", "replace").strip()
+                node["characteristics"].append({
+                    "uuid": str(ch.uuid),
+                    "name": client.name_for_uuid(ch.uuid) or "",
+                    "props": client._props(ch),
+                    "value_hex": val_hex,
+                    "value_interp": interp,
+                })
+            tree.append(node)
+        detected, _flags, _ns, _nc = capabilities.analyze(conn.database.services)
+        capreport = capabilities.report(conn.database.services)
+        # A service that reported zero characteristics is almost always the blatann
+        # wedge finalised early by the workaround — flag it so the UI can offer the
+        # BlueZ fallback to complete the enumeration.
+        incomplete = [n["uuid"] for n in tree if not n["characteristics"]]
+        return {"gatt": tree, "capabilities": [lbl for lbl, _note in detected],
+                "capability_report": capreport, "device_name": device_name,
+                "partial": bool(incomplete), "incomplete_services": incomplete}
+
     def _discover(self, ble_device, peer) -> dict:
-        """Connect, walk the GATT database reading readable chars, disconnect."""
+        """Connect, walk the GATT database reading readable chars, disconnect (one-shot)."""
         conn = self._connect(ble_device, peer)
         try:
-            # A dropped link during discovery leaves no services and makes every read
-            # time out (5 s each). blatann logs the driver-thread cause as
-            # NrfError.invalid_state on characteristic discovery — detect it here and
-            # fail clearly rather than persist an empty tree over good data.
-            # The blatann workaround (webui.blatann_patch) finalises discovery with
-            # partial results instead of wedging, so an empty database is now the
-            # genuine "nothing discoverable" case. An invalid_state can also be
-            # transient, so give discovery one more pass before giving up.
-            if not conn.database.services and conn.connected:
-                conn.discover_services().wait(10, exception_on_timeout=False)
-            if not conn.database.services:
-                if conn.connected:
-                    raise RuntimeError(
-                        "GATT discovery populated no services (peer still connected) "
-                        "even after a retry and the blatann partial-discovery "
-                        "workaround. This device's GATT does not enumerate over the "
-                        "dongle in this setup. If the transport then stops responding, "
-                        "Stop→Start the scan to reopen the dongle.")
-                raise RuntimeError(
-                    "GATT discovery returned no services — the peer disconnected "
-                    "during discovery. Bring it closer / keep it awake and retry.")
-            tree = []
-            device_name = ""
-            for svc in conn.database.services:
-                node = {
-                    "uuid": str(svc.uuid),
-                    "name": client.name_for_uuid(svc.uuid) or "",
-                    "characteristics": [],
-                }
-                for ch in svc.characteristics:
-                    val_hex, interp = "", ""
-                    # Skip reads once the link is gone — otherwise each one blocks 5 s.
-                    if ch.readable and conn.connected:
-                        try:
-                            _c, ev = ch.read().wait(5, exception_on_timeout=False)
-                        except Exception:                       # noqa: BLE001
-                            ev = None
-                        if ev is not None and getattr(ev, "value", None) is not None:
-                            val_hex = ev.value.hex()
-                            interp = client._interpret(ch.uuid, ev.value) or ""
-                            # GATT Device Name (0x2A00) — the only name some devices
-                            # expose (they advertise none); backfill it on the record.
-                            if client._u16(ch.uuid) == 0x2A00:
-                                device_name = ev.value.decode("utf-8", "replace").strip()
-                    node["characteristics"].append({
-                        "uuid": str(ch.uuid),
-                        "name": client.name_for_uuid(ch.uuid) or "",
-                        "props": client._props(ch),
-                        "value_hex": val_hex,
-                        "value_interp": interp,
-                    })
-                tree.append(node)
-            detected, _flags, _ns, _nc = capabilities.analyze(conn.database.services)
-            capreport = capabilities.report(conn.database.services)
+            self._guard_services(conn)
+            return self._tree_from_peer(conn)
         finally:
             # Always tear the link down (not only when conn.connected looks True) —
             # a wedged discovery can leave blatann's view and the SoftDevice link out
@@ -420,13 +748,6 @@ class Engine:
                 conn.disconnect().wait(5, exception_on_timeout=False)
             except Exception:
                 pass
-        # A service that reported zero characteristics is almost always the blatann
-        # wedge finalised early by the workaround — flag it so the UI can offer the
-        # BlueZ fallback to complete the enumeration.
-        incomplete = [n["uuid"] for n in tree if not n["characteristics"]]
-        return {"gatt": tree, "capabilities": [lbl for lbl, _note in detected],
-                "capability_report": capreport, "device_name": device_name,
-                "partial": bool(incomplete), "incomplete_services": incomplete}
 
     # --- read side (reuses the passive analysers) --------------------------
     def list_devices(self, **filters) -> list[dict]:
@@ -449,7 +770,83 @@ class Engine:
         incomplete = [s["uuid"] for s in d.get("gatt", []) if not s["characteristics"]]
         d["gatt_partial"] = bool(incomplete)
         d["gatt_incomplete"] = incomplete
+        # Capability fingerprint from the stored GATT tree (Task 2) — passive, computed
+        # from structure already discovered, so the detail page shows it without a live
+        # connection and refreshes whenever a browse/session updates the tree.
+        d["capabilities"] = self._capabilities_from_tree(d.get("gatt", []))
+        d["gatt_session"] = self.gatt_session()
         return d
+
+    # --- capability fingerprint (Task 2) -----------------------------------
+    @staticmethod
+    def _tree_as_objects(tree: list[dict]) -> list:
+        """Adapt a stored GATT tree (dicts) to objects `capabilities.*` understands.
+
+        `capabilities` reads `.uuid` plus the boolean char flags; the stored tree keeps
+        props as the compact "R/W/N" string, so parse it back into the flags here.
+        """
+        objs = []
+        for s in tree:
+            chars = []
+            for c in s.get("characteristics", []):
+                p = c.get("props", "") or ""
+                chars.append(SimpleNamespace(
+                    uuid=c.get("uuid", ""),
+                    readable="R" in p, writable="W" in p,
+                    writable_without_response=False, subscribable="N" in p,
+                ))
+            objs.append(SimpleNamespace(uuid=s.get("uuid", ""), characteristics=chars))
+        return objs
+
+    def _capabilities_from_tree(self, tree: list[dict]) -> dict | None:
+        if not tree:
+            return None
+        services = self._tree_as_objects(tree)
+        detected, flags, n_svc, n_char = capabilities.analyze(services)
+        dfu = ""
+        if capabilities.match_services(services, "Firmware update (DFU/OTA)"):
+            dfu = capabilities.dfu_exposure(services)
+        return {
+            "detected": [{"label": lbl, "note": note} for lbl, note in detected],
+            "flags": flags, "n_services": n_svc, "n_characteristics": n_char,
+            "report": capabilities.report(services), "dfu_exposure": dfu,
+        }
+
+    def device_capabilities(self, address: str) -> dict | None:
+        """Capability fingerprint for a device from its stored GATT tree (read-only)."""
+        d = self._store.get_device(address)
+        if d is None:
+            return None
+        return self._capabilities_from_tree(d.get("gatt", []))
+
+    # --- Classic SDP profiles (Task 5) -------------------------------------
+    def classic_profiles(self, address: str) -> dict:
+        """Read the device's SDP profiles over BlueZ and classify them.
+
+        Active (host-side): queries `bluetoothctl info` via `scan_classic.read_profiles`.
+        A running fused/classic scan is paused for it (it also uses hci0), mirroring
+        `browse_gatt_bluez`; a dongle-only BLE scan is left untouched.
+        """
+        address = store_module.normalize_address(address)
+        with self._op_log("classic_profiles", device=address, transport="bluez",
+                          action="SDP read", start=True):
+            with self._lock:
+                paused = False
+                if self._scanner is not None and self._kind in ("fused", "classic"):
+                    self._scanner.pause()
+                    paused = True
+                try:
+                    uuid16s, vendor = scan_classic.read_profiles(address)
+                finally:
+                    if paused:
+                        self._scanner.resume()
+            detected = capabilities.classic_detected(uuid16s)
+            return {
+                "uuid16s": sorted(f"0x{u:04X}" for u in uuid16s),
+                "vendor_count": vendor,
+                "detected": [{"label": lbl, "note": note} for lbl, note in detected],
+                "report": capabilities.classic_report(uuid16s, vendor),
+            }
 
     def exposure_report(self, address: str) -> str | None:
         d = self._store.get_device(address)

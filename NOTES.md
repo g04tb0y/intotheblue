@@ -3,6 +3,97 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-11-03, webui navigation + log footer (headless-validated; HW run pending)
+
+*Due richieste maintainer dopo la prima run webui con sessione GATT. (1) **Separare la
+pagina scan dal device aperto**: il click su una riga ora apre `/devices/{addr}` in una
+**nuova tab** (`window.open(..., '_blank')` in `_scan_table.html` e `devices.html`), così la
+scansione resta viva nella tab originale e non si fa più avanti-indietro. Scelta
+maintainer fra split-pane / barra globale / nuova tab → **nuova tab** (cambio minimale,
+gestione tab lato browser). (2) **Footer log ad almeno 10 righe**: `tail_events(8)→(10)` e
+footer `#logtail` ora **verticale** (colonna, `max-height:11rem` + scroll, `body
+padding-bottom:12rem`) invece della vecchia striscia orizzontale, così mostra le ultime 10
+righe come righe. Headless OK (py_compile; TestClient: window.open reso in entrambe le
+tabelle, tail rende 10 log-line con le 10 più recenti). Nota capabilities: "No known
+capability signatures matched" con servizi vendor è **corretto** — `capabilities.analyze`
+matcha solo UUID noti (DIS/Battery/HID/DFU/NUS…), non è un bug.*
+
+## Resume here — 2026-11-03, Capabilities-not-refreshed bug fixed (headless-validated; HW run pending)
+
+*Chiuso il BUG "Capabilities not refreshed/saved after a live GATT session" (sezione
+TODO → webui — next up). La persistenza c'era già (`gatt_connect` → `store.save_gatt`); il
+difetto reale era la **view**: il pannello `#capabilities` è `{% include %}`d una sola
+volta al load, quindi dopo un browse/sessione live la tab GATT si aggiornava ma
+Capabilities restava stale fino al reload. Fix HTMX event-driven: le route GATT che
+ri-enumerano l'albero ritornano `HX-Trigger: gatt-updated` (solo su successo) e il div
+`#capabilities` fa `hx-get` su `gatt-updated from:body`. Headless OK (py_compile;
+TestClient: detail cabla il trigger, `_render_gatt` emette l'header solo con
+`tree_changed and not error`). La verifica end-to-end su hardware reale resta all'utente.*
+
+## Resume here — 2026-11-03, quick wins + structured event logging (built, headless-validated; HW run pending)
+
+*Smarcati due blocchi TODO lato codice. Headless OK (py_compile; eventlog round-trip +
+filtri; CSV in discovery order; FastAPI TestClient su `/`, `/devices`, `/logs`,
+`/api/logs/{table,tail,export}`; MCP registra 19 tool con `query_events`). La run su
+hardware reale resta all'utente (Rules of conduct).*
+
+- **Quick wins.** (1) Lista **Devices** web: colonna "Seen" → "Last seen" con timestamp
+  leggibile via filtro Jinja `localtime` in `webui/api.py` (valore memorizzato resta
+  epoch; scelta con maintainer: solo web, le tabelle live tengono la colonna **Age**
+  relativa, `COLUMNS` intatte). (2) Export **CSV**: i tre `save_csv`
+  (`scan_live`/`scan_classic`/`scan_fused`) ora iterano in ordine di scoperta invece che
+  per RSSI, coerente con la tabella a schermo.
+- **Logging strutturato (JSONL).** Nuovo `eventlog.py` (solo stdlib, niente blatann, come
+  `store.py`): sink append-only a `logs/intotheblue.jsonl` (git-ignored;
+  `$INTOTHEBLUE_EVENTLOG`). `engine` lo possiede ed emette da un solo punto tramite il
+  context-manager `_op_log`, che avvolge ogni operazione radio (scan start/stop,
+  `browse_gatt`, `gatt_*`, `browse_gatt_bluez`, `classic_profiles`): `outcome`
+  ok/error/start, `boundary` passive/active; le letture passive del DB non sono loggate.
+- **Pagina Logs + footer + feedback.** `/logs` (filtri event/device/action + limit,
+  export JSONL), footer `#logtail` sempre visibile su ogni pagina (poll `/api/logs/tail`
+  ogni 3 s), e spinner `hx-indicator` + evento `start` sui bottoni Browse/Session/BlueZ/
+  Classic. MCP: nuovo tool read-only `query_events`.
+
+**Prossima run su hardware:** durante una scansione BLE + un Browse GATT reale, verificare
+che footer e pagina Logs mostrino gli eventi (start → ok/error) e che lo spinner compaia
+durante la connessione. Verificare anche l'ordine del CSV su una scansione reale.
+
+## Resume here — 2026-11-02, webui GATT interaction + enrichment (built, headless-validated; NOT yet hardware-validated)
+
+*Implemented the whole "webui GATT — interaction & enrichment" TODO block. Plan file:
+`~/.claude/plans/vast-brewing-lecun.md`. Headless checks pass (py_compile, store/BlueZ
+parse units, FastAPI TestClient smoke on seeded DB, MCP registers 18 tools). The dongle
+paths still need a real-hardware run.*
+
+- **Held-open GATT interaction session** (`engine.gatt_connect/gatt_read/gatt_write/
+  gatt_subscribe/gatt_unsubscribe/gatt_notifications/gatt_disconnect`). Design decision
+  (with maintainer): keep ONE peer connected across requests instead of connect-per-op,
+  so the scan is paused once per session — matches the dongle invariant and the user's
+  "don't drop the connection between ops". Notifications buffer per characteristic
+  (callback on blatann's event thread; `list.append` atomic under the GIL, poller swaps
+  the list) and the page drains them by polling with `hx-swap="beforeend"`. An **idle
+  watchdog** in `_flush_loop` auto-closes a session left open (`GATT_SESSION_IDLE=60s`)
+  so the scan is never silently pinned paused; `stop_scan` and a one-shot `browse_gatt`
+  both tear a live session down first. Refactor: extracted `_tree_from_peer` /
+  `_guard_services` from `_discover` so one-shot and session share the tree build.
+- **Capabilities view** (`engine._capabilities_from_tree`): runs `capabilities.*` over
+  the *stored* tree via a dict→object adapter (parses the compact `R/W/N` props back to
+  flags), so it is passive and needs no live connection. MCP read tool `capabilities`.
+- **BlueZ reads props/values** (`gatt_bluez._read_values`): second pass after
+  `list-attributes` — per char `attribute-info` (Flags) + `read 0` (Value). Best-effort,
+  version-sensitive (bluetoothctl 5.87 here). Unit-tested the parser on sample output.
+- **Classic SDP detail** in the webui (`engine.classic_profiles`): reuses
+  `scan_classic.read_profiles` + `capabilities.classic_*`. MCP tool `classic_profiles`.
+- **UI reorg**: `device_detail.html` is now **tabbed** (Overview/GATT/Capabilities/
+  Classic) with a pure-CSS tab switch (no JS) + a session-status bar (Close always
+  reachable). Active (transmitting) actions carry a distinct `active` badge/class.
+- **Device Name backfill**: `gatt_connect` now does the same `store.set_name` backfill as
+  `browse_gatt` — still needs the end-to-end hardware confirmation (TODO Task 4 below).
+
+**Next hardware run** — follow the verification section of the plan file: a `ble` scan,
+open a connectable device with W/N chars, exercise session read/write/subscribe + the
+idle auto-close, then Capabilities, the BlueZ value pass, and a `classic` scan for SDP.
+
 ## Resume here — 2026-11-02, GATT browse hardened on real hardware (Epson ET-3950 printer)
 
 *First live run of the webui GATT browse surfaced three real issues, now fixed and
@@ -351,29 +442,123 @@ viability, filter, CSV and the three passive refusals without any hardware.
 
 ## TODO
 
-### webui GATT — interaction & enrichment (next up)
-- [ ] **GATT interaction in the webui** — the browse is read-only; add the active
-      operations the CLI already has (`client.write_char`, `subscribe_char`,
-      `serial_console` for Nordic UART). Per readable/writable/notifiable characteristic:
-      Read (on demand), **Write** (hex/text/auto, reuse `client._parse_write_value`),
-      Subscribe/notify (stream notifications to the page). Gate writes behind an explicit
-      action (passive/active boundary). Needs the dongle connected, so it runs in the same
-      pause→act→resume path as `browse_gatt` (hold the connection open across reads/writes
-      instead of connect-per-op).
-- [ ] **Capabilities view in the webui** — surface `capabilities.analyze/report` (DFU/OTA,
-      HID, NUS, DIS, …) on the device detail, like the CLI capabilities menu.
-- [ ] **Read BlueZ characteristic values** — `gatt_bluez` enumerates structure only
-      (`list-attributes` omits props/values); add `gatt.select-attribute` + `gatt.read`
-      (and flags via per-char `info`) so BlueZ-sourced vendor chars get props/values too.
+### webui GATT — interaction & enrichment — IMPLEMENTED 2026-11-02 (headless-validated; HW run pending)
+- [x] **GATT interaction in the webui** — held-open session (`engine.gatt_*`), per-char
+      Read/Write (hex/text/auto via `client._parse_write_value`)/Subscribe, NUS console,
+      notification polling, idle watchdog. Writes gated behind an explicit action.
+- [x] **Capabilities view in the webui** — `engine._capabilities_from_tree` over the
+      stored tree (passive) + `_capabilities.html` tab + MCP `capabilities` tool.
+- [x] **Read BlueZ characteristic values** — `gatt_bluez._read_values` second pass
+      (`attribute-info` + `read 0`). Best-effort, bluetoothctl-version-sensitive.
 - [ ] **GATT Device Name backfill — confirm end-to-end** — plumbing proven (`store.set_name`
-      + 0x2A00 capture); capture one clean dongle discovery on an intermittent advertiser
-      to confirm the one-shot path live.
-- [ ] Classic (BR/EDR) detail in the webui — SDP profiles + CoD (`scan_classic.read_profiles`,
-      `decode_cod`), mirroring the CLI classic menu, so the detail page is complete per transport.
+      + 0x2A00 capture); `gatt_connect` now backfills too. Still need one clean dongle
+      discovery on an intermittent advertiser to confirm the live path.
+- [x] Classic (BR/EDR) detail in the webui — `engine.classic_profiles` + `_classic_profiles.html`
+      tab + MCP `classic_profiles`; CoD/Icon were already rendered on the detail page.
+
+### webui — next up
+- [ ] **Hardware-validate the GATT interaction block** — see the 2026-11-02 *Resume here*
+      and the plan file's verification section (session read/write/subscribe + idle
+      auto-close, Capabilities, BlueZ value pass, Classic SDP).
+- [ ] **Connection-action buttons on the device detail page** — evaluate adding explicit
+      Connect / Pair / Disconnect buttons when a device is opened (alongside the existing
+      GATT session controls). Active actions, so they go behind the explicit-action gate
+      and carry the `active` badge; slot into the existing `engine.gatt_*` session model
+      (Connect ≈ `gatt_connect`, Disconnect ≈ `gatt_disconnect`) rather than a new path —
+      Pair needs design (no bonding primitive exposed yet; decide dongle vs. BlueZ).
+- [x] **"Last seen" column with human-readable timestamp** — DONE 2026-11-03 (web-only,
+      per maintainer). The only raw-epoch display was the web **Devices** list
+      (`devices.html` "Seen" = `d.last_seen|int`); renamed to "Last seen" and formatted via
+      a Jinja `localtime` filter in `webui/api.py` (stored value stays epoch). The live
+      scan tables keep the deliberate relative **Age** column (`COLUMNS` untouched — the
+      "shared cell fn" note in the original item didn't apply; the epoch was never in
+      `COLUMNS`).
+- [x] **Structured JSON logging** — DONE 2026-11-03 (headless-validated). New
+      `eventlog.py` (stdlib-only, no blatann, like `store.py`): JSONL sink at
+      `logs/intotheblue.jsonl` (git-ignored; `$INTOTHEBLUE_EVENTLOG` override), fields
+      `ts`/`event`/`device`/`transport`/`action`/`boundary`/`outcome`/`error`. `engine`
+      owns it and emits from one place via an `_op_log` context manager wrapping each radio
+      op (scan start/stop, `browse_gatt`, `gatt_*`, `browse_gatt_bluez`, `classic_profiles`)
+      — `outcome` is ok/error/start, `boundary` passive/active; passive DB reads are not
+      logged. Read side: `engine.query_events`/`tail_events` + `eventlog.read/tail`.
+- [x] **Dedicated logs page in the webui** — DONE 2026-11-03. `/logs` (filter by
+      event/device/action + limit, `_logs_table.html`), `/api/logs/export` downloads the
+      filtered set as JSONL (`application/x-ndjson` attachment). Read-only over the sink.
+- [x] **Capabilities not refreshed/saved after a live GATT session** — FIXED 2026-11-03
+      (headless-validated). Two halves: (1) *persist* — `gatt_connect` already writes the
+      discovered tree back via `store.save_gatt` (same as `browse_gatt`), so the stored
+      tree is current after a session opens. (2) *refresh the view* — the real gap: the
+      detail page is tabbed with the `#capabilities` panel `{% include %}`d **once at page
+      load**, so after a live browse/session persisted a new tree the GATT tab swapped but
+      Capabilities stayed stale until a full reload. Fix: the tree-changing GATT routes
+      (`browse_gatt`, `browse_gatt_bluez`, `gatt_session_open`) now return
+      `HX-Trigger: gatt-updated` on success (via `_render_gatt(tree_changed=True)`), and the
+      `#capabilities` div carries `hx-get=/capabilities` + `hx-trigger="gatt-updated
+      from:body"` so it re-fetches from the stored tree on every enumeration. Header fires
+      only on success (not on error / no-op). Validated: detail page wires the trigger,
+      `_render_gatt` emits the header only when `tree_changed and not error`.
+- [x] **Browse-GATT progress/activity feedback + global log footer** — DONE 2026-11-03.
+      Long active ops emit a `start` event, and the browse/session/BlueZ/Classic buttons
+      carry an `hx-indicator` spinner (+ `hx-disabled-elt`) so a connect/browse shows "⏳
+      connecting…". The always-on footer (`#logtail` in `base.html`, polling
+      `/api/logs/tail` every 3 s, `_log_tail.html`) tails recent activity on every page.
+- [ ] **Keep the MCP surface in sync** — ONGOING. Done for this batch: MCP read tool
+      `query_events` added (19 tools now). As future tools/features land (Capabilities fix,
+      connect/pair/disconnect, Fast Pair, etc.), keep exposing each as a thin `engine`/
+      `store` wrapper, passive-vs-radio marked in the docstring, at parity with web/CLI.
+
+### Fast Pair — GATT interaction & complete pairing (NEW 2026-11-02, maintainer)
+Target: the Fast Pair Service (`0xFE2C`) and its characteristics, chiefly **Key-based
+Pairing** `FE2C1234-8366-4814-8EB0-01DE32100BEA` (Write+Notify) — the handshake that
+gates Passkey (`…1235`), Account Key (`…1236`), Additional Data (`…1237`). It establishes
+a shared secret: Seeker writes an AES-encrypted block (message-type `0x00`), Provider
+replies via notify (`0x01`). Two cases for the shared secret (see the key note on the
+*Complete pairing* item): Case 1 first-pair uses an **ECDH** agreement over the
+anti-spoofing key pair — the Seeker needs only the **public** key, the Provider holds the
+private one in a Secure Element; Case 2 reconnect uses a symmetric **account key** from
+the Provider's list. All actions below are
+**active/transmitting** → explicit-action gated + `active` badge, slotted into the
+scan/select/act model and the `engine.gatt_*` held-open session (not connect-per-op),
+reusing `client.*`; keep the crypto isolated in a new `fastpair.py` (like `bledev/
+fastpair.py` for the passive Model-ID side). Keep MCP at parity (one thin `engine` tool
+per action, passive-vs-radio marked in the docstring). Spec:
+developers.google.com/nearby/fast-pair/specifications/characteristics.
+- [ ] **Surface the Fast Pair GATT profile in the UI** — when a browsed/stored tree
+      contains `0xFE2C`, show which Fast Pair characteristics are present and their props
+      (confirms a real Provider; ties into the passive FastPair/Model-ID enrichment
+      already done). Passive over the stored tree, like the Capabilities view.
+- [ ] **Exercise the Key-based Pairing handshake** — a per-device action that writes a
+      Key-based Pairing Request to `…1234` and surfaces the notify response/error. Active,
+      gated; reuses the session's read/write/subscribe plumbing.
+- [ ] **Robustness/stress on the handshake** — malformed / wrong message-type /
+      unencrypted writes to `…1234` to observe how the Provider handles invalid input on a
+      crypto-gated-but-unencrypted characteristic. Ties to the bench's authorized stress-
+      test purpose; active, gated.
+- [ ] **Complete Fast Pair pairing flow** — drive the full procedure end-to-end
+      (ECDH handshake → Passkey exchange `…1235` → Account Key write `…1236`), as client.
+      **Key note (corrected 2026-11-02):** the first pairing needs **only the Provider's
+      anti-spoofing PUBLIC key** — the Seeker runs ECDH (secp256r1) between its own
+      ephemeral key pair and that public key to derive the AES shared secret, then proves
+      the Provider holds the matching private key (which never leaves the device — we do
+      **not** need and cannot extract it). The **account key is generated by us** (the
+      Seeker) and written to the Provider at the end of pairing, so **completing the
+      pairing is exactly how we obtain a persistent reconnect key** — no vendor secret
+      required. So the only real prerequisite is the public key, which in production Google
+      Play services fetches from Google by Model ID. The design decision is therefore how
+      to supply that public key consistent with the bench's **offline / non-phoning-home**
+      posture (we deliberately chose a local `fastpair_models.yaml` over Google's live
+      endpoint for Model-ID resolution — cf. `bledev/fastpair.py`): operator-supplied key
+      file / local cache keyed by Model ID, vs. accepting a Google lookup. Also decide
+      whether the bond rides the dongle or BlueZ (cf. the connect/pair item under *webui —
+      next up*, and the hardened-device bond-refusal finding 2026-08-28). Positive-control
+      candidate: `emulate.py` as a Provider whose anti-spoofing key pair we generate, so
+      both public (Seeker) and private (emulated device) sides are ours.
 
 ### pre-existing
-- [ ] Optional: make the `csv/` export order match the on-screen discovery order
-      (currently CSV is sorted by RSSI).
+- [x] ~~Optional: make the `csv/` export order match the on-screen discovery order~~ —
+      DONE 2026-11-03. All three `save_csv` (`scan_live`/`scan_classic`/`scan_fused`) now
+      iterate in discovery order (dict insertion / `snapshot()`) instead of sorting by
+      RSSI, matching the live table.
 - [ ] Re-validate the SPP serial console end-to-end once the Jabra bond is restored
       (they dropped the box's bond by reconnecting to a phone); last live run of the
       full CLI path stopped at `br-connection-key-missing`.

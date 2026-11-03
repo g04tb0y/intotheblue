@@ -1,0 +1,4 @@
+{# Appended (hx-swap="beforeend") to #notif-log on each poll: only the new notifications. #}
+{% for n in notifications %}
+  <li><code>{{ n.uuid }}</code>: <code>{{ n.hex }}</code>{% if n.interp %} <span class="muted">→ {{ n.interp }}</span>{% endif %}</li>
+{% endfor %}

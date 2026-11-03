@@ -37,3 +37,69 @@ details.gatt-svc { margin: .4rem 0; border: 1px solid var(--line); border-radius
 details.gatt-svc summary { cursor: pointer; font-family: monospace; }
 code { background: #0f1830; padding: .05rem .3rem; border-radius: 3px; }
 section { margin-bottom: 1rem; }
+
+/* Active (transmitting) actions marked distinctly from passive ones. */
+.badge.active { background: var(--err); color: #fff; }
+span.muted.badge.active { background: none; color: var(--err); font-weight: 600; }
+
+/* Pure-CSS tabs on the device detail (no JS/build): radios drive panel visibility. */
+.tabs > input[type=radio] { display: none; }
+.tabs > label { display: inline-block; padding: .4rem .8rem; cursor: pointer;
+  border: 1px solid var(--line); border-bottom: none; border-radius: 6px 6px 0 0;
+  color: var(--muted); margin-right: .2rem; }
+.tabs > .tab-panel { display: none; border: 1px solid var(--line); border-radius: 0 6px 6px 6px;
+  padding: .8rem 1rem; }
+#tab-overview:checked ~ label[for=tab-overview],
+#tab-gatt:checked ~ label[for=tab-gatt],
+#tab-caps:checked ~ label[for=tab-caps],
+#tab-classic:checked ~ label[for=tab-classic] { color: var(--fg); background: var(--panel);
+  border-color: var(--accent); }
+#tab-overview:checked ~ #panel-overview,
+#tab-gatt:checked ~ #panel-gatt,
+#tab-caps:checked ~ #panel-caps,
+#tab-classic:checked ~ #panel-classic { display: block; }
+
+.session-bar { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap;
+  background: var(--panel); padding: .4rem .7rem; border: 1px solid var(--line);
+  border-radius: 6px; margin: .5rem 0; }
+.action-msg { color: var(--scan); }
+.gatt-actions { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; margin: .5rem 0; }
+.char-actions form { display: inline-block; margin-right: .4rem; }
+.char-actions { white-space: normal; }
+.nus-console, .notif-box { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 6px; padding: .5rem .7rem; margin: .6rem 0; }
+#notif-log { list-style: none; padding: 0; margin: .3rem 0 0; max-height: 14rem;
+  overflow-y: auto; font-family: monospace; }
+#notif-log li { padding: .1rem 0; }
+pre { white-space: pre-wrap; background: #0f1830; padding: .5rem .7rem; border-radius: 5px; }
+
+/* Anchor styled as a button (e.g. the Logs "Export JSONL" link). */
+a.button { color: var(--fg); background: #1b2740; border: 1px solid var(--line);
+  border-radius: 5px; padding: .35rem .6rem; text-decoration: none; }
+a.button:hover { border-color: var(--accent); }
+
+/* Passive vs active boundary on log rows/badges (active reuses the --err accent). */
+.badge.passive { background: #33415a; color: var(--fg); }
+.badge.active { background: var(--err); color: #fff; }
+.badge.log-outcome.ok, .log-outcome.ok { color: var(--scan); }
+.badge.log-outcome.error, .log-outcome.error { color: var(--err); }
+.badge.log-outcome.start, .log-outcome.start { color: var(--accent); }
+tr.log-error td { background: #2a1620; }
+
+/* HTMX activity indicator (spinner) — shown only while a request is in flight. */
+.htmx-indicator { opacity: 0; transition: opacity .2s; color: var(--accent); }
+.htmx-request .htmx-indicator, .htmx-request.htmx-indicator { opacity: 1; }
+.spinner { font-weight: 600; }
+
+/* Always-on event-log tail, pinned to the bottom of every page. Stacked vertically
+   so it shows the last ~10 events as rows (oldest first, newest at the bottom like
+   `tail -f`); capped height with its own scroll so it never grows unbounded. */
+body { padding-bottom: 12rem; }
+footer#logtail { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  display: flex; flex-direction: column; gap: .1rem;
+  max-height: 11rem; overflow-y: auto;
+  background: var(--panel); border-top: 1px solid var(--line);
+  padding: .25rem .8rem; font-size: .8rem; font-family: monospace; }
+footer#logtail .log-line { display: flex; gap: .35rem; align-items: baseline;
+  white-space: nowrap; }
+footer#logtail .log-more { align-self: flex-end; text-decoration: none; }

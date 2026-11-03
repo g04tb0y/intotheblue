@@ -6,54 +6,100 @@
   {% if d.target %}<span class="badge target">{{ d.target }}</span>{% endif %}
 </h1>
 
-<section>
-  <h2>Info</h2>
-  <table class="kv">
-    <tr><th>Transport</th><td>{{ d.transport or '' }}</td></tr>
-    <tr><th>Address type</th><td>{{ d.addr_type or '?' }}</td></tr>
-    <tr><th>Connectable</th><td>{% if d.connectable == 1 %}yes{% elif d.connectable == 0 %}no{% else %}unknown{% endif %}</td></tr>
-    <tr><th>Manufacturer</th><td>{{ d.manufacturer or '' }}</td></tr>
-    <tr><th>Vendor (OUI)</th><td>{{ d.vendor_oui or '' }}</td></tr>
-    <tr><th>Protocol / type</th><td>{{ d.protocol or '' }}</td></tr>
-    <tr><th>Fast Pair</th><td>{{ d.fast_pair or '-' }}</td></tr>
-    <tr><th>Tx Power</th><td>{% if d.tx_power is not none %}{{ d.tx_power }} dBm{% else %}-{% endif %}</td></tr>
-    <tr><th>Last RSSI</th><td>{{ d.rssi or '' }}</td></tr>
-    {% if d.cod_label %}<tr><th>Class of Device</th><td>{{ d.cod_label }} ({{ d.icon }})</td></tr>{% endif %}
-    <tr><th>Sightings</th><td>{{ d.history|length }}</td></tr>
-  </table>
-</section>
-
-<section>
-  <h2>Advertised services</h2>
-  {% if d.advertised_services %}
-    <ul class="uuids">
-      {% for s in d.advertised_services %}<li>{{ s.uuid }}{% if s.name %} — {{ s.name }}{% endif %}</li>{% endfor %}
-    </ul>
-  {% else %}<p class="muted">none recorded</p>{% endif %}
-</section>
-
-<section>
-  <h2>Passive exposure</h2>
-  <table class="kv">
-    {% for label, value, note in d.exposure %}
-      <tr><th>{{ label }}</th><td>{{ value }}{% if note %}<br><span class="muted">{{ note }}</span>{% endif %}</td></tr>
-    {% endfor %}
-  </table>
-</section>
-
-<section>
-  <h2>GATT</h2>
-  <div id="gatt">
-    {% include "_gatt_tree.html" %}
-  </div>
-  {% if can_browse %}
-    <form hx-post="/api/devices/{{ d.address }}/gatt" hx-target="#gatt" hx-swap="innerHTML">
-      <button type="submit">Browse GATT (connect)</button>
-      <span class="muted">ACTIVE: opens an LE connection and reads readable characteristics.</span>
+{# Session status bar: shows whether a GATT interaction session is holding the link
+   open on this device, with a Close always reachable so the scan is never left paused. #}
+<div id="session-bar" class="session-bar">
+  {% if d.gatt_session and d.gatt_session.open and d.gatt_session.address == d.address %}
+    <span class="badge active">GATT session open</span>
+    <span class="muted">connection held — scan paused</span>
+    <form hx-post="/api/devices/{{ d.address }}/gatt/session/close"
+          hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
+      <button type="submit">Close session</button>
     </form>
   {% else %}
-    <p class="muted">To browse GATT, start a <strong>ble</strong> or <strong>fused</strong> scan
-      and open this device while it is in range.</p>
+    <span class="muted">No GATT session on this device.</span>
   {% endif %}
-</section>
+</div>
+
+<div class="tabs">
+  <input type="radio" name="tab" id="tab-overview" checked>
+  <label for="tab-overview">Overview</label>
+  <input type="radio" name="tab" id="tab-gatt">
+  <label for="tab-gatt">GATT</label>
+  <input type="radio" name="tab" id="tab-caps">
+  <label for="tab-caps">Capabilities</label>
+  {% if d.transport == 'classic' or d.cod_label %}
+    <input type="radio" name="tab" id="tab-classic">
+    <label for="tab-classic">Classic (SDP)</label>
+  {% endif %}
+
+  <section class="tab-panel" id="panel-overview">
+    <h2>Info</h2>
+    <table class="kv">
+      <tr><th>Transport</th><td>{{ d.transport or '' }}</td></tr>
+      <tr><th>Address type</th><td>{{ d.addr_type or '?' }}</td></tr>
+      <tr><th>Connectable</th><td>{% if d.connectable == 1 %}yes{% elif d.connectable == 0 %}no{% else %}unknown{% endif %}</td></tr>
+      <tr><th>Manufacturer</th><td>{{ d.manufacturer or '' }}</td></tr>
+      <tr><th>Vendor (OUI)</th><td>{{ d.vendor_oui or '' }}</td></tr>
+      <tr><th>Protocol / type</th><td>{{ d.protocol or '' }}</td></tr>
+      <tr><th>Fast Pair</th><td>{{ d.fast_pair or '-' }}</td></tr>
+      <tr><th>Tx Power</th><td>{% if d.tx_power is not none %}{{ d.tx_power }} dBm{% else %}-{% endif %}</td></tr>
+      <tr><th>Last RSSI</th><td>{{ d.rssi or '' }}</td></tr>
+      {% if d.cod_label %}<tr><th>Class of Device</th><td>{{ d.cod_label }} ({{ d.icon }})</td></tr>{% endif %}
+      <tr><th>Sightings</th><td>{{ d.history|length }}</td></tr>
+    </table>
+
+    <h2>Advertised services</h2>
+    {% if d.advertised_services %}
+      <ul class="uuids">
+        {% for s in d.advertised_services %}<li>{{ s.uuid }}{% if s.name %} — {{ s.name }}{% endif %}</li>{% endfor %}
+      </ul>
+    {% else %}<p class="muted">none recorded</p>{% endif %}
+
+    <h2>Passive exposure</h2>
+    <table class="kv">
+      {% for label, value, note in d.exposure %}
+        <tr><th>{{ label }}</th><td>{{ value }}{% if note %}<br><span class="muted">{{ note }}</span>{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </section>
+
+  <section class="tab-panel" id="panel-gatt">
+    <h2>GATT</h2>
+    <div id="gatt">
+      {% include "_gatt_tree.html" %}
+    </div>
+    {% if not can_browse %}
+      <p class="muted">To connect (browse or interact), start a <strong>ble</strong> or
+        <strong>fused</strong> scan and open this device while it is in range.</p>
+    {% endif %}
+  </section>
+
+  <section class="tab-panel" id="panel-caps">
+    <h2>Capabilities</h2>
+    <div id="capabilities"
+         hx-get="/api/devices/{{ d.address }}/capabilities"
+         hx-trigger="gatt-updated from:body"
+         hx-swap="innerHTML">
+      {# Rendered server-side once for the first paint; re-fetched whenever a GATT
+         enumeration persists a new tree (HX-Trigger: gatt-updated), so it never goes
+         stale after a live browse/session until a full page reload. #}
+      {% include "_capabilities.html" %}
+    </div>
+  </section>
+
+  {% if d.transport == 'classic' or d.cod_label %}
+    <section class="tab-panel" id="panel-classic">
+      <h2>Classic profiles (SDP)</h2>
+      <div id="classic">
+        <form hx-post="/api/devices/{{ d.address }}/classic" hx-target="#classic" hx-swap="innerHTML"
+              hx-indicator="#classic-spinner" hx-disabled-elt="this">
+          <button type="submit">Read profiles</button>
+          <span class="muted badge active">ACTIVE: queries SDP over BlueZ (bluetoothctl info); needs hci0 up.</span>
+          <span id="classic-spinner" class="htmx-indicator spinner">⏳ reading SDP over hci0…</span>
+        </form>
+      </div>
+    </section>
+  {% endif %}
+</div>
 {% endblock %}

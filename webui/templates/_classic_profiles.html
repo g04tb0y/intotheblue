@@ -1,0 +1,24 @@
+{# Classic SDP profiles read over BlueZ (Task 5). #}
+{% if error %}<p class="error">⚠ {{ error }}</p>{% endif %}
+{% if profiles %}
+  <p class="muted">{{ profiles.uuid16s|length }} SDP service class(es)
+    {% if profiles.vendor_count %}, {{ profiles.vendor_count }} vendor/other UUID(s){% endif %}</p>
+  {% if profiles.detected %}
+    <ul>
+      {% for p in profiles.detected %}
+        <li><strong>{{ p.label }}</strong> — {{ p.note }}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">SDP records present but no known profile matched
+      (or none cached — pair/connect the device first).</p>
+  {% endif %}
+  <details class="gatt-svc">
+    <summary>Full profile report</summary>
+    <pre>{{ profiles.report }}</pre>
+  </details>
+{% endif %}
+<form hx-post="/api/devices/{{ address }}/classic" hx-target="#classic" hx-swap="innerHTML">
+  <button type="submit">Re-read profiles</button>
+  <span class="muted badge active">ACTIVE: SDP over BlueZ (bluetoothctl info); needs hci0 up.</span>
+</form>

@@ -13,10 +13,16 @@
     <nav>
       <a href="/">Scans</a>
       <a href="/devices">Devices</a>
+      <a href="/logs">Logs</a>
     </nav>
   </header>
   <main>
     {% block content %}{% endblock %}
   </main>
+  {# Always-on tail of the structured event log (see /logs for the full history). #}
+  <footer id="logtail" hx-get="/api/logs/tail" hx-trigger="load, every 3s"
+          hx-swap="innerHTML">
+    <span class="muted">log…</span>
+  </footer>
 </body>
 </html>

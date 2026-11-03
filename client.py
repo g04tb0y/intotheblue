@@ -219,6 +219,18 @@ def read_char(char):
     return disp
 
 
+def write_char_value(char, data: bytes) -> bool:
+    """Write already-parsed bytes to a characteristic; return whether it succeeded.
+
+    Non-interactive counterpart of `write_char`: the value is supplied by the caller
+    rather than read from stdin, so the web/MCP engine can reuse the exact write path
+    without an interactive prompt.
+    """
+    if not (char.writable or char.writable_without_response):
+        return False
+    return bool(char.write(data).wait(5, exception_on_timeout=False))
+
+
 def write_char(char):
     """Prompt for a value and write it to the characteristic."""
     if not (char.writable or char.writable_without_response):
@@ -229,8 +241,8 @@ def write_char(char):
     except ValueError:
         print("  Invalid hex value.")
         return
-    result = char.write(data).wait(5, exception_on_timeout=False)
-    print(f"  Wrote {data.hex(' ')} ({len(data)} bytes)" if result else "  Write failed/timed out.")
+    ok = write_char_value(char, data)
+    print(f"  Wrote {data.hex(' ')} ({len(data)} bytes)" if ok else "  Write failed/timed out.")
 
 
 def read_all(pairs):

@@ -10,7 +10,7 @@
     </thead>
     <tbody>
       {% for row in rows %}
-        <tr onclick="window.location='/devices/{{ row.address }}'" class="clickable">
+        <tr onclick="window.open('/devices/{{ row.address }}', '_blank')" class="clickable">
           {% for cell in row.cells %}<td>{{ cell }}</td>{% endfor %}
           <td>{% if row.target %}<span class="badge target">{{ row.target }}</span>{% endif %}</td>
         </tr>
