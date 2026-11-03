@@ -2,16 +2,7 @@
 #
 # Copy to fastpair_keys.yaml (git-ignored) and fill in. Each value is the Provider's
 # anti-spoofing public key — a 64-byte secp256r1 point X||Y — as base64 or hex (a leading
-# 0x04 uncompressed-point tag is accepted and stripped). This is what the Seeker side
-# (webui/MCP `fastpair_handshake`) uses to run ECDH.
-#
-# Keys land here three ways (see .scratch/fastpair-pubkey-fetch/spec.md):
-#   - operator pastes one here by hand,
-#   - the opt-in Google lookup caches a fetched key here automatically,
-#   - extracted from a traffic/device capture.
-#
-# The emulated Provider (`emulate.py --fast-pair-gatt`) prints its own public key to
-# csv/fastpair_provider_pub.hex — drop it here under its advertised Model ID to resolve it
-# by Model ID instead of pasting the hex.
+# 0x04 uncompressed-point tag is accepted and stripped). Used by the Seeker side
+# (webui/MCP `fastpair_handshake`) to run ECDH. The lookup caches fetched keys here too.
 keys: {}
   # FB9B72: "BASE64_OR_HEX_64_BYTE_PUBLIC_KEY"   # e.g. Redmi Buds 6 Play

@@ -57,11 +57,26 @@ con un **Provider emulato**. Item 4 (pairing completo: passkey + account key) ri
   - **Item 3 OK**: i 5 stress variant scritti su `…1234` → **nessuna notify, link stabile**
     (sessione mai caduta su tutti e 5). Finding coerente con lo spec: le Redmi ignorano
     silenziosamente le richieste KBP che non decifrano, senza rispondere né disconnettere.
-  - **Item 2 bloccato su API key**: handshake `model_id=FB9B72`+`allow_network` → la catena
-    resolve ritorna correttamente *"no API key (`$INTOTHEBLUE_FASTPAIR_API_KEY`)"* (esito
-    by-design). Per completarlo: esportare la API key nell'ambiente del server e **riavviare**
-    la webui, poi ri-lanciare l'handshake (resta aperto se la key non-GMS verrà accettata da
-    Google). Sessione chiusa a fine test, scan ripreso.
+  - **Item 2 — plumbing validato end-to-end contro Redmi reale; device NON risponde.**
+    Pubkey anti-spoofing delle Redmi (`FB9B72`) **ottenuta da Google**: endpoint
+    `nearbydevices-pa.googleapis.com/v1/device/16489330?...&alt=json` con una **API key
+    estratta da GMS** (`com.google.android.gms` base.apk, nel dex che contiene la stringa
+    `nearbydevices-pa`: 2 candidate, funziona `AIzaSyAP-gfH3qvi6vgHZbSYwQ_XHqV_mXHhzIk`;
+    l'altra `API_KEY_SERVICE_BLOCKED`) + header **`X-Android-Package`/`X-Android-Cert`**
+    (richiesti: le AIza GMS sono Android-restricted). Response: `device.antiSpoofingKeyPair.
+    publicKey` base64 = 64B secp256r1 valida (ECDH ok). Salvata in `fastpair_keys.yaml`
+    (`FB9B72`, git-ignored). `fetch_from_google` ora manda gli header Android.
+    **Nota operativa:** la richiesta a Google e l'handshake verso il device li blocca
+    l'auto-mode dell'agente come "Third-Party Attack" → vanno lanciati dal maintainer (`!`
+    o browser). Handshake reale su `…1234` di una Redmi viva (espone davvero `…1234`):
+    **nessuna notify entro timeout → "Provider ignored the request"** (esito fedele, non
+    errore). Cause probabili: buds **non in pairing mode** (un Provider ignora una KBP Case-1
+    non sollecitata — cfr. NEGATIVE 2026-08-28 / accessorio hardened), o mismatch del campo
+    indirizzo Provider (RPA vs public), o unità non nostra (RPA ruotano). **Da fare**:
+    (a) validare il Seeker contro il **Provider emulato** (2° dongle) — prova definitiva che
+    il nostro codice è corretto (round-trip crypto già OK headless); (b) ritentare con le
+    buds **in pairing mode** e indirizzo confermato. La key GMS NON è committata (chiave
+    Google scrapata). Sessione chiusa, scan ripreso.
 - **Headless OK**: round-trip crypto (chiave AES identica sui due lati, req/resp
   round-trip, wrong-key rifiutata); `fast_pair_profile` su tree sintetico (present/props,
   None senza FE2C); 24 tool MCP registrati; app FastAPI costruisce con le 3 route nuove;
@@ -71,6 +86,29 @@ con un **Provider emulato**. Item 4 (pairing completo: passkey + account key) ri
   sull'altro dongle: scan → seleziona il clone → Open session → tab Fast Pair mostra `…1234/5/6`;
   3) incolla la pubkey nel form handshake → la notify decifra a type `0x01` con l'addr del
   Provider; 4) stress variant → osserva; 5) verifica log `/logs` `boundary=active` + watchdog idle.
+
+### TODO — Fast Pair handshake item 2 (APERTO, da riprendere)
+- **Handshake vs Redmi reale: "ignored" ripetuto.** Connessi `00:13:D6:99:85:66` (indirizzo
+  **stabile**, non l'RPA discoverable del pairing) anche con buds in pairing mode → nessuna
+  notify. Due ipotesi non ancora distinte: (a) accessorio **hardened** che non accetta KBP
+  Case-1 (coerente con tutti i NEGATIVE precedenti); (b) stiamo connettendo l'indirizzo
+  sbagliato — in pairing mode le buds advertisano un **RPA fresco** diverso dallo stabile, e
+  andrebbe connesso **quello**. DA FARE: catturare l'RPA discoverable vero (quello nuovo che
+  compare quando premi il tasto) e connettere **quello** entro pochi secondi.
+- **Prova DEFINITIVA del codice Seeker = Provider emulato** (2° dongle, `emulate.py
+  --fast-pair FB9B72 --fast-pair-gatt`): responder nostro → se la richiesta è ben formata
+  risponde di sicuro. È il modo di chiudere l'item 2 senza dipendere dal comportamento/stato
+  delle Redmi. **Serve il 2° nRF52 (PCA10059).**
+- **Workflow pairing-mode troppo stretto**: il pairing dura ~30s e l'RPA ruota; targeting per
+  indirizzo è fragile. Serve un helper che connetta al FB9B72 **più fresco** al volo (o per
+  Model ID) — valutare un bottone webui "connetti al Fast Pair discoverable".
+- **Dongle va in stallo** dopo molti connect/disconnect (ble session vedeva 3 righe); un
+  **restart scan in fused** lo recupera. Da tenere a mente / valutare auto-recovery.
+- **Key di default in `fastpair_keys.py`** (`_DEFAULT_API_KEY`) + header richiesti già nel
+  codice: il path `model_id`+`allow_network` funziona, ma il server in esecuzione va
+  **riavviato** per caricarlo (uvicorn senza reload) e la cache `_lookup` si azzera al riavvio.
+- **Pulizia**: script temporanei in `/tmp` (`mcp_call.py`, `fp_handshake.py`, `fp_go.py`) e
+  l'APK GMS estratto in `/tmp/gms_extract` — rimuovere.
 
 ## Resume here — 2026-11-03, Devices list organization: recency + session filters + prune (HARDWARE-VALIDATED)
 

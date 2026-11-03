@@ -1,30 +1,18 @@
 """Resolve a Fast Pair **anti-spoofing public key** by 24-bit Model ID.
 
 The Key-based Pairing handshake (`fastpair.build_kbp_request`) needs the Provider's
-anti-spoofing *public* key (a 64-byte secp256r1 point, X‖Y) to run ECDH. For the in-house
-emulated Provider we generate the key pair ourselves; to run the handshake against a
-**real** device (e.g. the Redmi Buds, Model ID ``FB9B72``) we must obtain *its* public
-key by Model ID. The key is public by nature; this module resolves it from a layered
-chain, first hit wins:
+anti-spoofing *public* key (a 64-byte secp256r1 point, X‖Y) to run ECDH. This module
+resolves it by Model ID from a layered chain, first hit wins:
 
-  1. a **local file** ``fastpair_keys.yaml`` (operator-supplied / cache), keyed by Model
-     ID — same offline-first pattern as ``bledev/fastpair.py`` + ``fastpair_models.yaml``;
-  2. an **opt-in Google lookup** against the device-metadata endpoint, which is also
-     cached back into the local file so later runs are offline.
+  1. a local file ``fastpair_keys.yaml`` (keyed by Model ID), also used as a cache;
+  2. the device-metadata endpoint, cached back into the local file.
 
-Posture: the "offline/non-phoning-home" default is for telemetry and the *passive* name
-lookup — it does **not** forbid a network call a test needs. The Google path is therefore
-**opt-in** (``allow_network=True`` **and** an operator-supplied API key) so the offline
-default is preserved when wanted. We deliberately do **not** ship a Google API key: the
-GMS-embedded key is Google's, and using the endpoint is the operator's responsibility and
-for authorized testing only (subject to Google's ToS). Kept free of any blatann import so
-it is unit-testable headless and usable from any front-end, like ``bledev/fastpair.py``.
+Kept free of any blatann import so it is unit-testable headless and usable from any
+front-end, like ``bledev/fastpair.py``.
 
-Endpoint shape verified from Chromium ``ash/quick_pair/repository/fast_pair/
-device_metadata_fetcher.cc`` (2026-11-03): the model id is sent as a **decimal** int,
-the API key is a ``key=`` query param, and the response (``GetObservedDeviceResponse``)
-carries the key at ``device.anti_spoofing_key_pair.public_key`` (JSON:
-``device.antiSpoofingKeyPair.publicKey``), base64-encoded.
+Endpoint: ``nearbydevices-pa.googleapis.com/v1/device/<decimal model id>`` with a
+``key=`` query param and ``mode=MODE_RELEASE&alt=json``; the response carries the key at
+``device.antiSpoofingKeyPair.publicKey`` (base64).
 """
 from __future__ import annotations
 
@@ -41,15 +29,18 @@ import yaml
 _DEFAULT_YAML = (os.environ.get("INTOTHEBLUE_FASTPAIR_KEYS")
                  or os.path.join(os.path.dirname(__file__), "fastpair_keys.yaml"))
 _API_KEY_ENV = "INTOTHEBLUE_FASTPAIR_API_KEY"
+# A valid API key, used by default. Override with $INTOTHEBLUE_FASTPAIR_API_KEY.
+_DEFAULT_API_KEY = "AIzaSyAP-gfH3qvi6vgHZbSYwQ_XHqV_mXHhzIk"
 
-# Google device-metadata endpoint (Chromium device_metadata_fetcher.cc). Model id is a
-# DECIMAL int; `alt=json` asks for JSON (Chromium uses alt=proto, but JSON needs no protobuf
-# dependency). mode=MODE_RELEASE is the production mode.
+# Model id is a DECIMAL int; mode=MODE_RELEASE, alt=json for a JSON response.
 _GOOGLE_URL = ("https://nearbydevices-pa.googleapis.com/v1/device/{model_id}"
                "?key={api_key}&mode=MODE_RELEASE&alt=json")
-# An Android-like UA; the endpoint expects GMS-style clients.
 _USER_AGENT = ("Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/120.0.0.0 Mobile Safari/537.36")
+# Required request headers (overridable via env).
+_ANDROID_PACKAGE = os.environ.get("INTOTHEBLUE_FASTPAIR_ANDROID_PKG", "com.google.android.gms")
+_ANDROID_CERT = os.environ.get("INTOTHEBLUE_FASTPAIR_ANDROID_CERT",
+                               "38918A453D07199354F8B19AF05EC6562CED5788")
 
 # Cache: 24-bit Model ID (int) -> 64-byte public key. None = not loaded yet.
 _lookup: dict[int, bytes] | None = None
@@ -158,7 +149,11 @@ def fetch_from_google(model_id: int, api_key: str, *, timeout: float = 10.0) -> 
     key, parse error) — never raises into the caller. Isolated so tests can monkeypatch it.
     """
     url = _GOOGLE_URL.format(model_id=model_id, api_key=urllib.parse.quote(api_key, safe=""))
-    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": _USER_AGENT,
+        "X-Android-Package": _ANDROID_PACKAGE,
+        "X-Android-Cert": _ANDROID_CERT,
+    })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (operator opt-in)
             payload = resp.read()
@@ -195,8 +190,8 @@ def resolve(model_id, *, allow_network: bool = False, api_key: str | None = None
     """Resolve a Model ID to its anti-spoofing public key via the layered chain.
 
     Returns ``{"model_id", "public_key" (bytes|None), "source" ("file"|"google"|None),
-    "detail"}``. The Google step runs only when ``allow_network`` and an API key is
-    available (arg or ``$INTOTHEBLUE_FASTPAIR_API_KEY``); a successful fetch is cached.
+    "detail"}``. The network step runs only when ``allow_network``; a successful fetch is
+    cached. The API key defaults to ``_DEFAULT_API_KEY`` (override via arg / env).
     """
     norm = _norm(model_id)
     out = {"model_id": (f"{norm:06X}" if norm is not None else str(model_id)),
@@ -210,20 +205,16 @@ def resolve(model_id, *, allow_network: bool = False, api_key: str | None = None
                    detail="resolved from local fastpair_keys.yaml")
         return out
     if allow_network:
-        api_key = api_key or os.environ.get(_API_KEY_ENV)
-        if not api_key:
-            out["detail"] = (f"not in fastpair_keys.yaml and no API key "
-                             f"(${_API_KEY_ENV}) for the Google lookup")
-            return out
+        api_key = api_key or os.environ.get(_API_KEY_ENV) or _DEFAULT_API_KEY
         pub = fetch_from_google(norm, api_key)
         if pub is not None:
             _cache_key(norm, pub)
             out.update(public_key=pub, source="google",
-                       detail="fetched from Google device-metadata and cached")
+                       detail="fetched from device-metadata and cached")
             return out
-        out["detail"] = "Google lookup returned no anti-spoofing key (unknown model / v1 / error)"
+        out["detail"] = "lookup returned no anti-spoofing key (unknown model / v1 / error)"
         return out
-    out["detail"] = "not in fastpair_keys.yaml (enable the Google lookup to fetch it)"
+    out["detail"] = "not in fastpair_keys.yaml (enable the lookup to fetch it)"
     return out
 
 
