@@ -416,8 +416,16 @@ class Store:
 
     # --- read side ---------------------------------------------------------
     def list_devices(self, search: str | None = None, transport: str | None = None,
-                     addr_type: str | None = None, fast_pair_only: bool = False) -> list[dict]:
-        """All persisted devices, newest sighting first, with optional filters."""
+                     addr_type: str | None = None, fast_pair_only: bool = False,
+                     since: float | None = None, session_id: int | None = None) -> list[dict]:
+        """All persisted devices, newest sighting first, with optional filters.
+
+        ``since`` keeps only devices whose ``last_seen`` is at or after that epoch (the
+        "seen recently" window — the store keeps every device forever, this just scopes
+        the view). ``session_id`` keeps only devices with a sighting in that scan session
+        (the "current/last scan" lens). Both are non-destructive; use ``prune_devices`` to
+        actually drop old history.
+        """
         clauses, params = [], []
         if search:
             clauses.append("(name LIKE ? OR address LIKE ? OR manufacturer LIKE ? OR vendor_oui LIKE ?)")
@@ -431,12 +439,47 @@ class Store:
             params.append(addr_type)
         if fast_pair_only:
             clauses.append("fast_pair != ''")
+        if since is not None:
+            clauses.append("last_seen >= ?")
+            params.append(since)
+        if session_id is not None:
+            clauses.append("address IN (SELECT DISTINCT address FROM sighting WHERE session_id = ?)")
+            params.append(session_id)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT * FROM device{where} ORDER BY last_seen DESC", params
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def prune_devices(self, before: float) -> int:
+        """Delete devices whose ``last_seen`` is older than ``before`` (epoch), with all
+        their dependent rows (sightings, advertised services, GATT tree). Destructive —
+        frees history the recency/session filters only hide. Returns the count removed.
+
+        FK cascade isn't relied on (it needs ``PRAGMA foreign_keys`` on), so every
+        dependent table is cleared explicitly for the pruned addresses.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT address FROM device WHERE last_seen IS NOT NULL AND last_seen < ?",
+                (before,),
+            ).fetchall()
+            addresses = [r["address"] for r in rows]
+            if not addresses:
+                return 0
+            marks = ", ".join("?" for _ in addresses)
+            self._conn.execute(
+                f"DELETE FROM gatt_characteristic WHERE service_id IN "
+                f"(SELECT id FROM gatt_service WHERE address IN ({marks}))",
+                addresses,
+            )
+            for table in ("gatt_service", "advertised_service", "sighting", "device"):
+                self._conn.execute(
+                    f"DELETE FROM {table} WHERE address IN ({marks})", addresses
+                )
+            self._conn.commit()
+        return len(addresses)
 
     def get_device(self, address: str) -> dict | None:
         """Full device view: enrichment + advertised services + GATT + sighting stats."""

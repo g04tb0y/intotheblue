@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Devices · intotheblue{% endblock %}
+{% block tabname %}Devices{% endblock %}
 {% block content %}
 <h1>Devices <span class="muted">({{ devices|length }})</span></h1>
-<p class="muted">Every device persisted across scans. Click one to see its info, passive
-exposure and GATT.</p>
+<p class="muted">Every device persisted across scans. Click one to open it as a tab above
+(several stay open at once) with its info, passive exposure and GATT.</p>
+
+{% if pruned is not none %}
+  <p class="action-msg">Pruned {{ pruned }} old device(s) from the store.</p>
+{% endif %}
 
 <form method="get" action="/devices" class="filters">
   <input type="text" name="search" value="{{ search }}" placeholder="name / address / vendor">
@@ -14,9 +19,33 @@ exposure and GATT.</p>
     {% endfor %}
     <option value="le" {% if transport == 'le' %}selected{% endif %}>le</option>
   </select>
+  <label>Seen within
+    <select name="recent">
+      {% for key in recent_windows %}
+        <option value="{{ key }}" {% if recent == key %}selected{% endif %}>{{ key or 'all' }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label><input type="checkbox" name="session" value="true"
+    {% if session %}checked{% endif %}> Current/last scan only</label>
   <label><input type="checkbox" name="fast_pair_only" value="true"
     {% if fast_pair_only %}checked{% endif %}> Fast Pair only</label>
   <button type="submit">Filter</button>
+</form>
+
+{# Destructive cleanup: actually drops old rows the filters above only hide. Confirmed
+   client-side; posts to a dedicated route and bounces back with a count. #}
+<form method="post" action="/api/devices/prune" class="filters"
+      onsubmit="return confirm('Delete devices not seen within this window from the store? This cannot be undone.');">
+  <span class="muted badge active">CLEANUP</span>
+  <label>Delete devices older than
+    <select name="older_than">
+      {% for key in prune_windows %}
+        <option value="{{ key }}" {% if key == '7d' %}selected{% endif %}>{{ key }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit">Prune</button>
 </form>
 
 <table class="grid">
@@ -29,7 +58,7 @@ exposure and GATT.</p>
   </thead>
   <tbody>
     {% for d in devices %}
-      <tr onclick="window.open('/devices/{{ d.address }}', '_blank')" class="clickable">
+      <tr class="clickable" data-address="{{ d.address }}" data-label="{{ d.name or d.address }}">
         <td>{{ d.address }}</td>
         <td>{{ d.name or '' }}</td>
         <td>{{ d.transport or '' }}</td>

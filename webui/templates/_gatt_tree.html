@@ -27,6 +27,23 @@
     <form hx-post="/api/devices/{{ d.address }}/gatt/session/close" hx-target="#gatt" hx-swap="innerHTML" style="display:inline">
       <button type="submit">Close session</button>
     </form>
+    {# Pair: active bonding attempt. dongle = central-side on this held link (Nordic);
+       bluez = bluetoothctl over the host adapter (hci0) — two distinct radios. #}
+    <form hx-post="/api/devices/{{ d.address }}/gatt/pair" hx-target="#gatt" hx-swap="innerHTML"
+          hx-indicator="#gatt-spinner" hx-disabled-elt="this" style="display:inline">
+      <select name="method">
+        <option value="dongle">dongle (nRF52)</option>
+        <option value="bluez">BlueZ (hci0)</option>
+      </select>
+      <button type="submit" class="active">Pair</button>
+      <span class="muted badge active">ACTIVE: attempts a Just Works bond; a refusal is a valid result.</span>
+    </form>
+    <span id="gatt-spinner" class="htmx-indicator spinner">⏳ pairing…</span>
+    {% if d.gatt_session.pair_status %}
+      <p class="muted">Last pair ({{ d.gatt_session.pair_status.method }}):
+        {{ d.gatt_session.pair_status.status }}
+        {% if d.gatt_session.pair_status.bonded %}<span class="badge active">bonded</span>{% endif %}</p>
+    {% endif %}
   </div>
 {% endif %}
 

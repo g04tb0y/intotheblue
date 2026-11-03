@@ -3,14 +3,128 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-11-03, Devices list organization: recency + session filters + prune (headless-validated; HW run pending)
+
+*Richiesta maintainer: lo scan salva ogni device visto subito nel `device` table (flush
+~2 s), quindi la pagina Devices accumulava anche device di giorni fa. Serviva "prendere gli
+ultimi / filtrare interattivamente / non tenere i vecchi". Scelta maintainer (multi):
+**tutte e tre** — filtro recency + lente sessione + azione di pulizia.*
+
+- **`store.list_devices`** ha due nuovi filtri **non distruttivi**: `since` (epoch floor →
+  `last_seen >= ?`, la finestra "visti di recente") e `session_id` (`address IN (SELECT …
+  FROM sighting WHERE session_id=?)`, la lente "solo ultimo scan"). Lo store continua a
+  tenere tutto per sempre; questi scopano solo la **vista**.
+- **`store.prune_devices(before)`** (DISTRUTTIVO): cancella i device con `last_seen <
+  before` e tutte le righe dipendenti (sighting, advertised_service, gatt_service +
+  gatt_characteristic). Non si affida al FK cascade (serve `PRAGMA foreign_keys` on):
+  cancella ogni tabella esplicitamente per gli address selezionati. Ritorna il conteggio.
+- **`engine.current_session_id()`**: la sessione live se sta scansionando, altrimenti la
+  più recente da `list_sessions()` (o None). `engine.prune_devices` wrappa lo store.
+- **Pagina Devices** (`api.devices_page` + `devices.html`): dropdown "Seen within"
+  (`_RECENT_WINDOWS`: 5m/15m/1h/6h/24h/7d/all, **default 24h**), checkbox "Current/last scan
+  only", e un **form di prune** separato (`_PRUNE_WINDOWS` 1h/24h/7d/30d, default 7d,
+  badge CLEANUP, `confirm()` JS, POST `/api/devices/prune` → RedirectResponse 303 a
+  `/devices?pruned=N` con avviso). Filtri combinabili via GET.
+- **MCP in parità**: `list_devices` ha `seen_within_seconds` + `current_session_only`;
+  nuovo tool **`prune_devices`** (DISTRUTTIVO, store non radio). Tool totali **21**.
+- **Headless OK** (DB `:memory:`): filtri since/session isolano i device freschi dal
+  vecchio; `current_session_id` ritorna l'ultima sessione fuori scan; pagina rende i tre
+  controlli e applica i filtri; prune rimuove il device vecchio + le dipendenti; route
+  prune fa 303 con conteggio; MCP registra 21 tool con `prune_devices`. **Da validare su
+  hardware**: dopo un paio di scansioni reali, verificare "Current/last scan only" e la
+  prune sul DB vero.
+
+## Resume here — 2026-11-03, webui single-page tab strip (supersedes the new-tab nav; headless-validated, HW run pending)
+
+*Richiesta maintainer dopo la run: il click su un device non deve aprire una **tab del
+browser** (scelta 2026-11-03, vedi sezione più sotto) ma restare dentro la stessa
+single-page app, potendo **tenere aperti più device insieme e passare dall'uno all'altro
+senza chiudere i pane**. Sostituito `window.open(..., '_blank')` con una **tab strip
+in-page**.*
+
+- **Shell in `base.html`**: una `#tabbar` con una tab "home" fissa (il contenuto della
+  pagina: Scan / Devices / Logs via nuovo `{% block tabname %}`) + `#panes`. La home resta
+  viva (la scansione continua a fare polling anche quando la tab è nascosta). `static/
+  tabs.js` (vanilla, nessun build) gestisce apri/commuta/chiudi tab.
+- **Ogni device aperto = una tab con `<iframe>`** di `/devices/{addr}?bare=1`. **Perché
+  iframe e non un frammento**: la detail page è piena di `id`/`hx-target` fissi (`#gatt`,
+  `#capabilities`, `#session-bar`, le tab a radio) e tiene una **sessione GATT**; incollare
+  più frammenti nello stesso documento li farebbe collidere. L'iframe isola `id`, stili e
+  sessione per-device **senza toccare i template esistenti**. I pane sono show/hide (tenuti
+  vivi), mai ricaricati → tornando su un device ne conservi lo stato.
+- **Modalità `bare`**: `GET /devices/{addr}?bare=1` (param in `api.device_detail`) rende la
+  stessa pagina **senza** header/nav, footer-log, tab strip, link "← Devices"; htmx resta
+  caricato (serve alle azioni interne della detail). `body.bare` toglie anche il
+  padding-bottom del footer.
+- **Righe cliccabili**: `_scan_table.html` e `devices.html` ora portano
+  `data-address`/`data-label` (niente più `onclick`); `tabs.js` usa **event delegation**
+  così continua a funzionare quando la tabella scan viene swappata da htmx ogni secondo.
+- **Headless OK** (TestClient, DB `:memory:`): `/` ha tab strip + home "Scan" + `tabs.js`,
+  nessun `window.open`; `/devices` righe con `data-address`/`data-label`; detail full ha
+  header+footer+back-link; detail `?bare=1` non ha header/footer/tabbar/tabs.js/back-link
+  ma ha htmx + il contenuto (`#panel-gatt`) e `class="bare"`; frammento scan table senza
+  `window.open`. **Da validare su hardware**: aprire 2+ device da una scansione live,
+  commutare fra le tab mentre lo scan continua, aprire una sessione GATT in una tab e
+  confermare che l'altra resti indipendente.
+
+## Resume here — 2026-11-03, webui Pair action (Connect/Pair/Disconnect done; headless-validated, HW run pending)
+
+*Chiuso il TODO "Connection-action buttons on the device detail page". Connect/Disconnect
+esistevano già come "Open interaction session"/"Close session" (riusati, label invariate su
+scelta maintainer); l'unica primitiva mancante era **Pair**, che il NOTES segnava come
+decisione aperta (dongle vs BlueZ). Scelta maintainer: **entrambi, con selettore in UI**.*
+
+- **`engine.gatt_pair(address, method)`** (`webui/engine.py`), wrappato in `_op_log(
+  "gatt_pair", boundary="active", start=True)`. `method="dongle"` → `_pair_dongle`: sotto
+  `_lock` sul peer della **sessione aperta** (`_require_session`), `conn.security.
+  set_security_params(bond=True, io_capabilities=NONE, lesc=False, passcode=False)` +
+  `conn.security.pair().wait(30)`; l'API blatann è stata verificata sulla source installata
+  (`blatann/gap/smp.py` `pair()`→`ble_gap_authenticate`; `PairingCompleteEventArgs(status,
+  security_level, security_process)`; `status` è `BLEGapSecStatus`, `.name`=success/timeout/
+  pairing_not_supp/…; `EventWaitable.wait` ritorna `(peer, ev)` o `[None,None]` in timeout).
+  `method="bluez"` → riusa `scan_classic.pair(address)` (bluetoothctl pair/trust su hci0),
+  **fuori** dal `_lock` (subprocess ~50 s). Esito riportato fedelmente in
+  `{method,status,bonded,detail}`; un bond rifiutato (accessori Fast Pair hardened, cfr.
+  2026-08-28) è un risultato valido, non un errore.
+- **Due radio distinte**: `dongle`=Nordic/blatann, `bluez`=adattatore generico host/hci0 →
+  non contendono (contesa solo su hci0 stesso, es. scan fused). Vedi inventario sotto.
+- **UI**: route `POST /api/devices/{addr}/gatt/pair` (campo form `method`); form Pair +
+  `<select>` (dongle nRF52 / BlueZ hci0) nel branch sessione-aperta di `_gatt_tree.html`
+  (`class="active"`, badge ACTIVE, `hx-indicator`); riga "Last pair" da
+  `gatt_session().pair_status` (nuovo campo, pulito in `_gatt_teardown`). MCP: tool
+  `gatt_pair` (20 tool totali).
+- **Headless OK**: py_compile; TestClient (detail 200; pair senza sessione → errore "no GATT
+  session open" non 500; metodo ignoto → "unknown pair method"; branch sessione rende form +
+  select + last-pair); MCP registra 20 tool con `gatt_pair`.
+
+**Open question — orchestrazione multi-radio.** Il banco ha ora **tre radio eterogenee**:
+adattatore generico = **hci0/BlueZ** (backend `bluez` di Pair + Classic/scan_le/GATT-BlueZ),
+**Nordic nRF52** (blatann, backend `dongle` + sessioni GATT), **Sonoff CC2652P** ancora da
+flashare con Sniffle (sniffer BLE passivo → futuro `SniffleScanner`, non un controller).
+Oggi `engine` assume **un solo** nRF52 (autodetect del singolo `*nRF52*`, un `BleDevice`
+aperto, CLI⇄web mutuamente esclusivi). Un vero modello multi-radio: selezione dell'nRF52 via
+`/dev/serial/by-id` (per averne più d'uno), policy scan-radio vs act-radio (es. Sniffle
+sniffa mentre il Nordic si connette, eliminando la pausa-scan), e Sniffle come scanner
+`livetable`. Il parametro `method` di `gatt_pair` è già pensato per accogliere un domani la
+scelta della radio. **Non costruito** — registrato come TODO futuro.
+
+**Prossima run su hardware:** con una scansione `ble`/`fused`, apri un device connettibile,
+*Open interaction session*, poi **Pair (dongle)** → verifica che l'event log mostri `gatt_pair
+start → ok/error`, che lo stato bond si veda, che il positive control (`emulate.py
+--positive-control` come peer) si accoppi e un target Fast Pair hardened rifiuti con
+messaggio chiaro. Poi **Pair (bluez)** durante una scansione *fused* (hci0 up).
+
 ## Resume here — 2026-11-03, webui navigation + log footer (headless-validated; HW run pending)
 
+**⚠️ La parte (1) "nuova tab del browser" è SUPERATA dalla sezione in cima** (tab strip
+in-page con iframe). Il footer-log (parte 2) resta valido.
+
 *Due richieste maintainer dopo la prima run webui con sessione GATT. (1) **Separare la
-pagina scan dal device aperto**: il click su una riga ora apre `/devices/{addr}` in una
-**nuova tab** (`window.open(..., '_blank')` in `_scan_table.html` e `devices.html`), così la
-scansione resta viva nella tab originale e non si fa più avanti-indietro. Scelta
-maintainer fra split-pane / barra globale / nuova tab → **nuova tab** (cambio minimale,
-gestione tab lato browser). (2) **Footer log ad almeno 10 righe**: `tail_events(8)→(10)` e
+pagina scan dal device aperto**: il click su una riga ~~ora apre `/devices/{addr}` in una
+**nuova tab** (`window.open(..., '_blank')`)~~ apriva una nuova tab del browser, poi
+sostituito dalla tab strip in-page (vedi sopra). Scelta maintainer fra split-pane / barra
+globale / nuova tab → **nuova tab**, poi rivista in **tab strip SPA** su richiesta
+(più device aperti insieme, commutabili). (2) **Footer log ad almeno 10 righe**: `tail_events(8)→(10)` e
 footer `#logtail` ora **verticale** (colonna, `max-height:11rem` + scroll, `body
 padding-bottom:12rem`) invece della vecchia striscia orizzontale, così mostra le ultime 10
 righe come righe. Headless OK (py_compile; TestClient: window.open reso in entrambe le
@@ -460,12 +574,19 @@ viability, filter, CSV and the three passive refusals without any hardware.
 - [ ] **Hardware-validate the GATT interaction block** — see the 2026-11-02 *Resume here*
       and the plan file's verification section (session read/write/subscribe + idle
       auto-close, Capabilities, BlueZ value pass, Classic SDP).
-- [ ] **Connection-action buttons on the device detail page** — evaluate adding explicit
-      Connect / Pair / Disconnect buttons when a device is opened (alongside the existing
-      GATT session controls). Active actions, so they go behind the explicit-action gate
-      and carry the `active` badge; slot into the existing `engine.gatt_*` session model
-      (Connect ≈ `gatt_connect`, Disconnect ≈ `gatt_disconnect`) rather than a new path —
-      Pair needs design (no bonding primitive exposed yet; decide dongle vs. BlueZ).
+- [x] **Connection-action buttons on the device detail page** — DONE 2026-11-03
+      (headless-validated; HW run pending). Connect/Disconnect already existed as "Open
+      interaction session"/"Close session" (reused, labels unchanged per maintainer). The
+      missing primitive was **Pair**: new `engine.gatt_pair(address, method)` with **two
+      backends chosen in the UI** — `dongle` (central-side Just Works on the open session's
+      peer via blatann `peer.security.set_security_params`+`pair()`, mirroring
+      `emulate.py --positive-control` on the central side) and `bluez` (reuses
+      `scan_classic.pair`, bluetoothctl over hci0). They run on two physically distinct
+      radios so they don't contend. Route `POST /api/devices/{addr}/gatt/pair` (method form
+      field), Pair form + method `<select>` in the session-open branch of `_gatt_tree.html`
+      (`active` badge, `hx-indicator`), last outcome surfaced via `gatt_session().pair_status`
+      (cleared on teardown), MCP tool `gatt_pair`. Outcome reported faithfully — a refused
+      bond is a valid result. See the 2026-11-03 *Resume here*.
 - [x] **"Last seen" column with human-readable timestamp** — DONE 2026-11-03 (web-only,
       per maintainer). The only raw-epoch display was the web **Devices** list
       (`devices.html` "Seen" = `d.last_seen|int`); renamed to "Last seen" and formatted via
@@ -502,10 +623,22 @@ viability, filter, CSV and the three passive refusals without any hardware.
       carry an `hx-indicator` spinner (+ `hx-disabled-elt`) so a connect/browse shows "⏳
       connecting…". The always-on footer (`#logtail` in `base.html`, polling
       `/api/logs/tail` every 3 s, `_log_tail.html`) tails recent activity on every page.
-- [ ] **Keep the MCP surface in sync** — ONGOING. Done for this batch: MCP read tool
-      `query_events` added (19 tools now). As future tools/features land (Capabilities fix,
-      connect/pair/disconnect, Fast Pair, etc.), keep exposing each as a thin `engine`/
-      `store` wrapper, passive-vs-radio marked in the docstring, at parity with web/CLI.
+- [ ] **Keep the MCP surface in sync** — ONGOING. **MCP ⇄ webui: in parity** — every
+      `engine` op has a thin MCP wrapper with passive-vs-radio marked in the docstring.
+      Tool count **21**: read `list_devices` (now with `seen_within_seconds`/
+      `current_session_only`), `get_device`, `exposure_report`, `capabilities`,
+      `list_scan_sessions`, `scan_status`, `scan_snapshot`, `query_events`; store-
+      destructive `prune_devices`; active `scan_start`, `scan_stop`, `browse_gatt`,
+      `gatt_connect`, `gatt_disconnect`, `gatt_pair`, `gatt_read`, `gatt_write`,
+      `gatt_subscribe`, `gatt_unsubscribe`, `gatt_notifications`, `classic_profiles`.
+      Latest add: `prune_devices` + the `list_devices` recency/session filters (2026-11-03).
+      As future tools land (Fast Pair, etc.), add the matching MCP wrapper in the same change.
+    - **Known CLI gap (not MCP's):** the CLI's BLE GATT menu (`cli.py` `_gatt_menu`,
+      connect-on-enter model) exposes **no dongle-side Pair** — the only Pair in the CLI is
+      Classic/BlueZ via `scan_classic.pair` (`cli.py:291`). So the new `gatt_pair(dongle)`
+      lives in webui+MCP but not the CLI. Decide later whether to add a dongle Pair action to
+      the CLI GATT menu for three-way parity (would reuse `scan_classic.pair`/a central-side
+      `security.pair()` helper), or accept the CLI as the thinner front-end.
 
 ### Fast Pair — GATT interaction & complete pairing (NEW 2026-11-02, maintainer)
 Target: the Fast Pair Service (`0xFE2C`) and its characteristics, chiefly **Key-based

@@ -68,6 +68,7 @@ class Engine:
         self._gatt_notifs: dict[str, list[dict]] = {}   # char uuid -> buffered notifications
         self._gatt_subscribed: set[str] = set()  # char uuids currently subscribed
         self._gatt_deadline: float = 0.0         # idle auto-close time (monotonic-ish)
+        self._gatt_pair_status: dict | None = None  # last Pair outcome (for UI/MCP)
 
     # Idle timeout for a held-open GATT session: a session pins the scan paused and
     # holds an LE link, so it must not leak if the browser tab is closed mid-session.
@@ -293,6 +294,7 @@ class Engine:
             "connected": bool(self._gatt_peer is not None
                               and getattr(self._gatt_peer, "connected", False)),
             "subscribed": sorted(self._gatt_subscribed),
+            "pair_status": self._gatt_pair_status,
         }
 
     def gatt_connect(self, address: str) -> dict:
@@ -467,6 +469,60 @@ class Engine:
                 self._gatt_teardown()
             return self.gatt_session()
 
+    def gatt_pair(self, address: str, method: str = "dongle") -> dict:
+        """ACTIVE: attempt to bond with `address` over one of two physically distinct radios.
+
+        `method="dongle"` pairs central-side on the peer held by an **open interaction
+        session** (`_gatt_peer`), reusing that link rather than reconnecting — the gatt_*
+        session model. Just Works by default (bond, no passkey, IO NONE), mirroring the
+        proven `emulate.py --positive-control` params but on the central's `peer.security`.
+        `method="bluez"` drives `bluetoothctl pair`/`trust` over the host adapter (hci0),
+        independent of the dongle; the device must already be in BlueZ's cache (true during
+        a *fused* scan). The two backends run on separate radios, so they don't contend.
+
+        The outcome is reported faithfully — a refused bond (hardened Fast Pair accessories
+        reject Just Works, cf. NOTES 2026-08-28) is a valid finding, not an error. Returns
+        ``{"method", "status", "bonded", "detail"}`` and stashes it for the UI/MCP.
+        """
+        address = store_module.normalize_address(address)
+        with self._op_log("gatt_pair", device=address, action=method,
+                          boundary="active", start=True):
+            if method == "dongle":
+                result = self._pair_dongle(address)
+            elif method == "bluez":
+                # No dongle/session involved; don't hold the lock across the ~50 s
+                # bluetoothctl subprocess (it would freeze the flush thread / other ops).
+                out = scan_classic.pair(address).strip()
+                low = out.lower()
+                result = {"method": "bluez", "status": out,
+                          "bonded": "paired and trusted" in low, "detail": out}
+            else:
+                raise ValueError(f"unknown pair method {method!r} (use 'dongle' or 'bluez')")
+            self._gatt_pair_status = result
+            return result
+
+    def _pair_dongle(self, address: str) -> dict:
+        """Central-side Just Works pairing on the open session's peer. Lock + session held."""
+        from blatann.gap import IoCapabilities
+        with self._lock:
+            conn = self._require_session(address)
+            conn.security.set_security_params(
+                passcode_pairing=False, bond=True, lesc_pairing=False,
+                io_capabilities=IoCapabilities.NONE, out_of_band=False)
+            try:
+                _peer, ev = conn.security.pair().wait(30, exception_on_timeout=False)
+            except Exception as err:                                # noqa: BLE001
+                raise RuntimeError(f"pairing failed: {err}")
+            self._touch_session()
+        if ev is None:
+            return {"method": "dongle", "status": "timeout", "bonded": False,
+                    "detail": "pairing timed out (no response from the peer)"}
+        status = getattr(ev.status, "name", str(ev.status))
+        level = getattr(ev.security_level, "name", str(ev.security_level))
+        bonded = status == "success"
+        return {"method": "dongle", "status": status, "bonded": bonded,
+                "detail": f"status={status}, security_level={level}"}
+
     # --- session helpers ---------------------------------------------------
     def _require_session(self, address: str):
         """The connected peer for an open session on `address`, or raise. Lock held."""
@@ -519,6 +575,7 @@ class Engine:
         self._gatt_addr = None
         self._gatt_notifs = {}
         self._gatt_subscribed = set()
+        self._gatt_pair_status = None
         if self._scanner is not None:
             try:
                 self._scanner.resume()
@@ -858,6 +915,20 @@ class Engine:
 
     def list_sessions(self) -> list[dict]:
         return self._store.list_sessions()
+
+    def current_session_id(self) -> int | None:
+        """The scan session to scope the "current/last scan" device view to: the live
+        one while scanning, otherwise the most recent session on record (or None if the
+        store has never seen a scan)."""
+        if self._session_id is not None:
+            return self._session_id
+        sessions = self._store.list_sessions()          # newest first
+        return sessions[0]["id"] if sessions else None
+
+    def prune_devices(self, before: float) -> int:
+        """Delete persisted devices older than ``before`` (epoch). Destructive — the
+        caller gates it behind an explicit, confirmed action."""
+        return self._store.prune_devices(before)
 
 
 # Module-level singleton: the one hardware owner for this process.

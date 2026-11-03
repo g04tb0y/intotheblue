@@ -5,9 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}intotheblue{% endblock %}</title>
   <link rel="stylesheet" href="/static/style.css">
+  {# htmx is needed in both the shell and the bare (iframed) device detail, so it is
+     loaded unconditionally. The tab manager (tabs.js) is only for the shell. #}
   <script src="/static/vendor/htmx.min.js"></script>
 </head>
-<body>
+<body{% if bare %} class="bare"{% endif %}>
+  {% if not bare %}
   <header>
     <span class="brand">intotheblue</span>
     <nav>
@@ -16,13 +19,31 @@
       <a href="/logs">Logs</a>
     </nav>
   </header>
+  {% endif %}
   <main>
-    {% block content %}{% endblock %}
+    {# Single-page tab strip: the "home" tab is this page's content and keeps running
+       (the live scan keeps polling even while hidden); clicking a device row opens it
+       as an additional in-page tab (an iframe of its bare detail page), so several
+       devices stay open at once and you switch between them without losing the scan. #}
+    {% if not bare %}
+    <div id="tabbar">
+      <button class="tab-btn active" data-pane="home"
+              onclick="activateTab('home')">{% block tabname %}intotheblue{% endblock %}</button>
+    </div>
+    {% endif %}
+    <div id="panes">
+      <div class="tab-view active" id="pane-home">
+        {% block content %}{% endblock %}
+      </div>
+    </div>
   </main>
+  {% if not bare %}
   {# Always-on tail of the structured event log (see /logs for the full history). #}
   <footer id="logtail" hx-get="/api/logs/tail" hx-trigger="load, every 3s"
           hx-swap="innerHTML">
     <span class="muted">log…</span>
   </footer>
+  <script src="/static/tabs.js"></script>
+  {% endif %}
 </body>
 </html>

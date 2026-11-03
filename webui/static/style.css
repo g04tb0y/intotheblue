@@ -42,6 +42,22 @@ section { margin-bottom: 1rem; }
 .badge.active { background: var(--err); color: #fff; }
 span.muted.badge.active { background: none; color: var(--err); font-weight: 600; }
 
+/* Single-page tab strip (tabs.js): the "home" tab is the page, each extra tab is an
+   opened device rendered as an iframe. Panes are show/hidden (kept alive), not reloaded. */
+#tabbar { display: flex; gap: .25rem; flex-wrap: wrap; align-items: flex-end;
+  border-bottom: 1px solid var(--line); margin-bottom: .9rem; }
+.tab-btn { background: #1b2740; border: 1px solid var(--line); border-bottom: none;
+  border-radius: 6px 6px 0 0; color: var(--muted); padding: .35rem .7rem;
+  display: inline-flex; align-items: center; gap: .5rem; margin-bottom: -1px; }
+.tab-btn.active { color: var(--fg); background: var(--panel); border-color: var(--accent); }
+.tab-btn .tab-close { color: var(--muted); font-size: .8rem; line-height: 1; }
+.tab-btn .tab-close:hover { color: var(--err); }
+.tab-view { display: none; } .tab-view.active { display: block; }
+iframe.device-frame { width: 100%; height: calc(100vh - 15rem); border: 1px solid var(--line);
+  border-radius: 6px; background: var(--bg); }
+/* Bare (iframed) detail page has no fixed footer, so it needs no footer clearance. */
+body.bare { padding-bottom: 1rem; }
+
 /* Pure-CSS tabs on the device detail (no JS/build): radios drive panel visibility. */
 .tabs > input[type=radio] { display: none; }
 .tabs > label { display: inline-block; padding: .4rem .8rem; cursor: pointer;

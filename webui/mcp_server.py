@@ -29,12 +29,19 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
     # --- read-only tools ---------------------------------------------------
     @mcp.tool()
     def list_devices(search: str = "", transport: str = "",
-                     fast_pair_only: bool = False) -> list[dict]:
+                     fast_pair_only: bool = False, seen_within_seconds: float = 0,
+                     current_session_only: bool = False) -> list[dict]:
         """List persisted devices (read-only). Optional substring `search` (name /
         address / manufacturer / vendor), `transport` filter (ble/fused/classic/le),
-        and `fast_pair_only`. Returns stored enrichment plus a `target` note."""
+        `fast_pair_only`, `seen_within_seconds` (keep only devices seen that recently;
+        0 = all history), and `current_session_only` (only devices seen in the current
+        or most recent scan). Returns stored enrichment plus a `target` note."""
+        import time
+        since = (time.time() - seen_within_seconds) if seen_within_seconds else None
+        session_id = engine.current_session_id() if current_session_only else None
         return engine.list_devices(search=search or None, transport=transport or None,
-                                   fast_pair_only=fast_pair_only)
+                                   fast_pair_only=fast_pair_only, since=since,
+                                   session_id=session_id)
 
     @mcp.tool()
     def get_device(address: str) -> dict:
@@ -85,6 +92,16 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
         transport."""
         return engine.query_events(event=event, device=device, action=action, limit=limit)
 
+    @mcp.tool()
+    def prune_devices(older_than_seconds: float = 604800) -> dict:
+        """DESTRUCTIVE (store, not radio): delete persisted devices not seen within
+        `older_than_seconds` (default 7 days), with their sightings/advertised services/
+        GATT tree. Frees history that the `list_devices` recency filters only hide.
+        Returns the number removed. Transmits nothing."""
+        import time
+        removed = engine.prune_devices(time.time() - older_than_seconds)
+        return {"removed": removed, "older_than_seconds": older_than_seconds}
+
     # --- active tools (drive the radio) ------------------------------------
     @mcp.tool()
     def scan_start(kind: str = "ble") -> dict:
@@ -115,6 +132,13 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
     def gatt_disconnect(address: str = "") -> dict:
         """Close the held-open GATT session and resume the scan."""
         return engine.gatt_disconnect(address)
+
+    @mcp.tool()
+    def gatt_pair(address: str, method: str = "dongle") -> dict:
+        """ACTIVE: attempt to bond with `address`. method=dongle (central-side Just Works
+        pairing on the open GATT session, needs gatt_connect first) | bluez (bluetoothctl
+        pair over hci0). Returns the outcome; a refused bond is a valid result, not an error."""
+        return engine.gatt_pair(address, method)
 
     @mcp.tool()
     def gatt_read(address: str, char_uuid: str) -> dict:

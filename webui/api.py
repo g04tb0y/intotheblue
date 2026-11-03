@@ -67,28 +67,63 @@ def scans_page(request: Request):
     })
 
 
+# Recency presets for the Devices list: label -> window in seconds (None = all history).
+# The store keeps every device forever; these only scope the *view* to recent sightings.
+_RECENT_WINDOWS: dict[str, int | None] = {
+    "": None, "5m": 300, "15m": 900, "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800,
+}
+# Prune presets: delete devices not seen within this window (older than now - window).
+_PRUNE_WINDOWS: dict[str, int] = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+
+
+def _recent_cutoff(recent: str) -> float | None:
+    """Epoch floor for a recency preset, or None for 'all'."""
+    seconds = _RECENT_WINDOWS.get(recent)
+    return (time.time() - seconds) if seconds else None
+
+
 @router.get("/devices", response_class=HTMLResponse)
 def devices_page(request: Request, search: str = "", transport: str = "",
-                 fast_pair_only: bool = False):
+                 fast_pair_only: bool = False, recent: str = "24h", session: bool = False,
+                 pruned: int | None = None):
     eng = _engine()
+    since = _recent_cutoff(recent)
+    session_id = eng.current_session_id() if session else None
     devices = eng.list_devices(search=search or None, transport=transport or None,
-                               fast_pair_only=fast_pair_only)
+                               fast_pair_only=fast_pair_only, since=since,
+                               session_id=session_id)
     return _TEMPLATES.TemplateResponse(request, "devices.html", {
         "request": request, "devices": devices, "search": search,
         "transport": transport, "fast_pair_only": fast_pair_only,
-        "kinds": eng.kinds(),
+        "kinds": eng.kinds(), "recent": recent, "recent_windows": _RECENT_WINDOWS,
+        "session": session, "session_scoped": session_id is not None,
+        "prune_windows": _PRUNE_WINDOWS, "pruned": pruned,
     })
 
 
+@router.post("/api/devices/prune")
+def devices_prune(older_than: str = Form("7d")):
+    """DESTRUCTIVE: delete persisted devices not seen within the chosen window, then
+    bounce back to the Devices list with a count. Gated behind an explicit form action
+    (a confirm dialog in the UI); the recency/session filters only hide, this removes."""
+    seconds = _PRUNE_WINDOWS.get(older_than)
+    if seconds is None:
+        return RedirectResponse("/devices", status_code=303)
+    removed = _engine().prune_devices(time.time() - seconds)
+    return RedirectResponse(f"/devices?pruned={removed}", status_code=303)
+
+
 @router.get("/devices/{address}", response_class=HTMLResponse)
-def device_detail(request: Request, address: str):
+def device_detail(request: Request, address: str, bare: bool = False):
+    """Device detail page. `bare=1` drops the header/tab-strip/footer chrome so the page
+    can be embedded as an in-page device tab (an iframe) by the single-page tab strip."""
     eng = _engine()
     device = eng.get_device(address)
     if device is None:
         return HTMLResponse(f"<p>No device {address!r} in the store.</p>", status_code=404)
     can_browse = eng.is_scanning() and eng.status()["kind"] in ("ble", "fused")
     return _TEMPLATES.TemplateResponse(request, "device_detail.html", {
-        "request": request, "d": device, "can_browse": can_browse,
+        "request": request, "d": device, "can_browse": can_browse, "bare": bare,
     })
 
 
@@ -208,6 +243,20 @@ def gatt_session_close(request: Request, address: str):
     try:
         eng.gatt_disconnect(address)
         error, action = "", "Session closed — scan resumed."
+    except Exception as err:                                    # noqa: BLE001
+        error, action = str(err), ""
+    return _render_gatt(request, address, error=error, action=action)
+
+
+@router.post("/api/devices/{address}/gatt/pair", response_class=HTMLResponse)
+def gatt_pair(request: Request, address: str, method: str = Form("dongle")):
+    """ACTIVE: attempt a bond — method=dongle (central-side, needs an open session) or
+    bluez (bluetoothctl pair over hci0). Reports the outcome; a refusal is a valid result."""
+    eng = _engine()
+    try:
+        r = eng.gatt_pair(address, method)
+        error = ""
+        action = f"Pair ({r['method']}): {r['status']}" + (" — bonded" if r["bonded"] else "")
     except Exception as err:                                    # noqa: BLE001
         error, action = str(err), ""
     return _render_gatt(request, address, error=error, action=action)

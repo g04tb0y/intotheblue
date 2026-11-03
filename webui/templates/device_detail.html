@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ d.address }} · intotheblue{% endblock %}
 {% block content %}
-<p><a href="/devices">&larr; Devices</a></p>
+{% if not bare %}<p><a href="/devices">&larr; Devices</a></p>{% endif %}
 <h1>{{ d.name or '(no name)' }} <span class="muted">{{ d.address }}</span>
   {% if d.target %}<span class="badge target">{{ d.target }}</span>{% endif %}
 </h1>
