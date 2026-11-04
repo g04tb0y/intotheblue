@@ -59,8 +59,24 @@ nRF52/blatann e BlueZ. Spec+ticket in `.scratch/sniffle-scanner/`. Issue 01 (pac
     sniffer BLE. Il link BLE compare solo durante l'handshake Fast Pair GATT (primo pairing). Per
     quei casi serve il lato Classic, non il conn-follow BLE. (Diag `follow_diag.py`: target …85:66
     hop3 → tanta advertising, 0 CONNECT_IND perché nessuna connessione *BLE* avviene.)
-- **Prossimo: Phase 3 (issue 04)** — select/act (export PCAP via `sniffle.pcap`, dump GATT),
-  persistenza connessioni nello `store`, e surfacing web/MCP. **Commit solo su richiesta esplicita.**
+- **Phase 3 (issue 04) — incrementi.**
+  - **3a — Export PCAP (DONE, headless).** `ConnectionRecord.packets` bufferizza i pacchetti
+    decodificati della connessione (il `CONNECT_IND`, che porta AA/CRCInit/ChM per il dissector,
+    + i `DataMessage` seguiti), cap `_CONN_PCAP_CAP=50000`. `sniff.export_pcap(record, path)` li
+    scrive con `sniffle.pcap.PcapBleWriter` (DLT BLUETOOTH_LE_LL_WITH_PHDR) in `pcap/` (nuovo,
+    git-ignored). CLI: azione **"Export PCAP"** nel menu per-connessione. Headless: header PCAP
+    valido (magic a1b2c3d4) + record scritto. **HW-VALIDATO (2026-11-04)**: emulate.py + nRF
+    Connect (letture ATT) → "Export PCAP" → `pcap/sniffle_conn_B6338817_*.pcap`, 4617 pacchetti,
+    encapsulation "BLE Link Layer RF" (DLT 256), gerarchia `btle→btl2cap(106)→btatt(106)`: ATT
+    dissezionato in tshark. NB: `pcap/` è relativo alla CWD di lancio di `cli.py` (root repo).
+  - **3b — persistenza connessioni nello `store`** (tabella `connection` nuova: AA, central/
+    peripheral normalizzati, addr-type, interval/latency/timeout, canali, encrypted, terminated,
+    conteggi, session_id, first/last seen; `upsert_connection`/`list_connections`/
+    `row_to_connection`, blatann-free). TODO.
+  - **3c — engine + web + MCP** (owner singolo per il Sonoff, follow session + export come metodi
+    engine, vista connessioni + download PCAP su web, tool MCP `list_connections` passivo +
+    follow/export; `_op_log` con `transport="sniffle"`). TODO.
+  - **Commit solo su richiesta esplicita, dopo validazione HW.**
 
 - **Issue 01 — packaging (DONE).** Vendorizzato `python_cli/sniffle/` → top-level `sniffle/`
   (in-repo come `bledev/`/`webui/`, **non** pip-installed). Droppati i moduli SDR pesanti

@@ -477,10 +477,19 @@ def _sniff_conn_menu(rec):
         print(f"  Encrypted:          {'yes (ATT payload is ciphertext)' if rec.encrypted else 'not observed'}")
         print(f"  State:              {'terminated' if rec.terminated else 'live'}")
         print(f"  RSSI:               {rec.rssi}")
+        print(f"  Buffered packets:   {len(rec.packets)} (for PCAP export)")
+
+    def export_pcap() -> None:
+        if not rec.packets:
+            print("  No buffered packets yet — nothing to export.")
+            return
+        path = sniff.export_pcap(rec)
+        print(f"  Exported {len(rec.packets)} packets -> {path}  (open in Wireshark)")
 
     def build():
         return [
             ("d", "Show connection details (passive)", _leaf(details)),
+            ("p", "Export PCAP (open in Wireshark)", _leaf(export_pcap)),
         ]
     return menu.Menu(title, build)
 

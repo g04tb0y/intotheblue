@@ -6,6 +6,9 @@
 csv/
 *.log
 
+# PCAP export delle connessioni seguite (Sniffle conn-follow; apribili in Wireshark)
+pcap/
+
 # SQLite persistence (ricreabile; scansioni/GATT salvati dal web/MCP)
 db/
 

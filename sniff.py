@@ -65,6 +65,7 @@ from sniffle.packet_decoder import (
     ScanRspMessage,
     str_mac,
 )
+from sniffle.pcap import PcapBleWriter
 from sniffle.sniffle_hw import SniffleHW
 
 # Stable by-id link for the Sonoff bridge (CP210x), independent of enumeration order.
@@ -117,6 +118,11 @@ _APPLE_MSG_TYPES = {
 }
 
 _FAST_PAIR_UUID = 0xFE2C
+
+# Upper bound on raw packets buffered per followed connection for PCAP export. A followed
+# link can run indefinitely; capping keeps memory finite while still capturing the start of
+# the connection (the dissectable ATT/GATT exchange), which is what the export is for.
+_CONN_PCAP_CAP = 50000
 
 # --- Manufacturer (BLE Company ID) resolution -------------------------------
 # A small, blatann-free loader of the bundled manufact.yaml snapshot. bledev.manufacturers
@@ -353,6 +359,10 @@ class ConnectionRecord:
     terminated: bool = False      # saw LL_TERMINATE_IND
     first_seen: float = field(default_factory=time.time)
     last_seen: float = field(default_factory=time.time)
+    # Raw decoded packets of this connection (CONNECT_IND + followed data), for PCAP export.
+    # Capped at _CONN_PCAP_CAP; the decoded message objects carry everything PcapBleWriter
+    # needs (ts_epoch, aa, chan, rssi, body, phy, crc_rev, crc_err).
+    packets: list = field(default_factory=list, repr=False)
 
 
 # Live-table columns for connection-follow mode. The two MAC columns are the deliverable:
@@ -383,6 +393,26 @@ def _parse_mac(mac: str) -> bytes:
     if len(parts) != 6:
         raise ValueError(f"MAC must be 6 colon-separated bytes, got {mac!r}")
     return bytes(int(h, 16) for h in reversed(parts))
+
+
+def export_pcap(record: "ConnectionRecord", path: str | None = None) -> str:
+    """Write a followed connection's buffered packets to a PCAP for Wireshark.
+
+    The capture starts at the `CONNECT_IND` (which carries the access address, CRC init and
+    channel map a dissector needs) and includes the followed data-channel packets, so an
+    unencrypted link's ATT/GATT exchange dissects directly. DLT is BLUETOOTH_LE_LL_WITH_PHDR
+    via `sniffle.pcap.PcapBleWriter`. Returns the written path.
+    """
+    os.makedirs("pcap", exist_ok=True)
+    if path is None:
+        path = f"pcap/sniffle_conn_{record.aa:08X}_{int(time.time())}.pcap"
+    writer = PcapBleWriter(path)
+    try:
+        for pkt in record.packets:
+            writer.write_packet_message(pkt)
+    finally:
+        writer.close()
+    return path
 
 
 # --- Scan engine ------------------------------------------------------------
@@ -574,6 +604,7 @@ class SniffleScanner:
                     hop=msg.Hop,
                     channels=channels,
                 )
+                rec.packets.append(msg)  # the CONNECT_IND: carries AA/CRCInit/ChM for dissection
                 self.connections[msg.aa_conn] = rec
             rec.rssi = msg.rssi
             rec.last_seen = time.time()
@@ -585,6 +616,8 @@ class SniffleScanner:
             if rec is None:
                 return  # data for a connection whose CONNECT_IND we never saw
             rec.last_seen = time.time()
+            if len(rec.packets) < _CONN_PCAP_CAP:
+                rec.packets.append(msg)
             if msg.data_dir:  # 1 = peripheral -> central
                 rec.pkt_peripheral += 1
             else:             # 0 = central -> peripheral
