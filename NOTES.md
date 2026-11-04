@@ -87,6 +87,63 @@ con un **Provider emulato**. Item 4 (pairing completo: passkey + account key) ri
   3) incolla la pubkey nel form handshake → la notify decifra a type `0x01` con l'addr del
   Provider; 4) stress variant → osserva; 5) verifica log `/logs` `boundary=active` + watchdog idle.
 
+### 2026-11-04 — Handshake item 2 run vs Redmi reale (via MCP, dongle): findings
+- **Seeker/cripto PROVATI corretti (headless).** Round-trip `build_kbp_request` →
+  `parse_kbp_request` (Provider con priv key) → `build_kbp_response` → `parse_kbp_response`:
+  ECDH condiviso combacia, request/response codificano/decodificano. Il silenzio del device
+  **non è un nostro bug**. (script in `/tmp`, non committato).
+- **Sul dongle, le Redmi sono raggiungibili SOLO sull'indirizzo pubblico stabile**
+  `00:13:D6:99:85:66` (scan `ble` solo-dongle: unica riga FP, `pub`, "Redmi Buds 6 Play",
+  ~40 pkt/finestra). L'RPA discoverable `rnd-r` (`6B:CF:9D:7F:E3:D7`, "Google Fast Pair"
+  **senza** model-name decodificato) si vede **solo da BlueZ/hci0**, resta fisso ~45s
+  (RSSI -50/-60, non ruota) ma `gatt_connect` dà sempre *"not currently seen by the dongle"* →
+  perché `engine._dongle_and_peer` risolve il peer dallo snapshot del **dongle**, mentre il
+  fused `snapshot()` è **BlueZ-keyed** (vede righe che il dongle non ha). Potrebbe anche non
+  essere le cuffie. **Il dongle non intercetta il frame model-ID discoverable.**
+- **Su `…1234` (pubblico): write SEMPRE accettata, 0 notify** — né a KBP Case-1 valida (chiave
+  anti-spoofing FB9B72 ufficiale), né a stress `random-16`/`wrong-type`; **link mai caduto**
+  (`still_connected: true`). Finestra notify estesa a 25-30s → esclude la risposta tardiva.
+- **Lettura protocollare più probabile:** sull'indirizzo pubblico *non-discoverable* il Provider
+  è in stato "subsequent/account-key" e si aspetta una KBP cifrata con una **Account Key** già
+  condivisa; la nostra richiesta **anti-spoofing Case-1** (handshake item 2) non matcha alcuna
+  account key → ignorata in silenzio. Il flusso Case-1 lo accetta solo la frame **discoverable**
+  (model-ID), che dal dongle non raggiungiamo.
+- **DA FARE (prossimi passi reali):** (1) capire perché il dongle non vede il frame discoverable
+  (config scan nRF / filtro) **oppure** aggiungere un percorso **write+subscribe FE2C via BlueZ
+  (hci0)** per fare l'handshake sull'RPA discoverable (estende `gatt_bluez`); (2) chiusura
+  pulita item 2 col **positive control** `emulate.py --fast-pair-gatt` (serve 2° nRF52 PCA10059).
+
+### 2026-11-04 (cont.) — raggiunto il frame discoverable, ma SEMPRE 0 notify
+- **Il dongle VEDE l'RPA discoverable** (quando le buds sono davvero in pairing e vicine,
+  RSSI -37): `6D:70:9F:DC:EA:2D` ecc. — "Redmi Buds 6 Play" / Google FastPair / `rnd-r`. Gli RPA
+  **ruotano a ogni sessione di pairing** (visti 6B:CF, 62:18, 4B:B4, 42:6E, 6D:70…). La
+  discoverability è **intermittente**: a volte 90s di scan non vedono nulla, a volte compare subito.
+  → `_dongle_and_peer` funziona benissimo quando il record RPA è nello snapshot del DONGLE (scan
+  `ble`), non del fused (BlueZ-keyed).
+- **Connesso all'RPA discoverable col dongle + write 80B RIUSCITA** su …1234 (Case-1, model-ID
+  frame giusto, chiave anti-spoofing FB9B72 ufficiale) → **comunque 0 notify** (25s), stress
+  idem, link su. Quindi NON è l'indirizzo/frame né la meccanica di write.
+- **Via BlueZ/hci0 (percorso scartato per la write):** BlueZ connette l'RPA, risolve tutto FE2C
+  (…1233/1234/1235/1236/1237), `notify on` OK, **MTU 256**, flag di …1234 = **`write` + `notify`**.
+  Ma `gatt.write` → `org.bluez.Error.NotSupported` su **ogni** tipo (`command`/`request`/`reliable`).
+  Non è lunghezza (MTU 256). Ipotesi: BlueZ rifiuta perché il device vuole un tipo di write che
+  BlueZ non manda su un char senza flag write-without-response. **Il dongle invece scrive (Write
+  Request) senza problemi** → il radio giusto per la write è il dongle, BlueZ serve solo a *vedere*.
+- **Conclusione provvisoria:** con tutto il lato Seeker provato corretto e la write arrivata al
+  frame discoverable giusto, le Redmi **non emettono la KBP response**. Da spec, su verifica
+  anti-spoofing fallita il Provider **tace**. Cause residue non ancora distinte: (a) `provider_addr`
+  incapsulato sbagliato — lo spec verifica contro public **o** RPA; il test con **public**
+  `00:13:D6:99:85:66` incapsulato (connesso all'RPA) NON è ancora riuscito perché il dongle non ha
+  riagganciato l'RPA nei 90s; **da ritentare con le buds vicinissime** (hanno agganciato a -37);
+  (b) chiave anti-spoofing non valida per questo firmware (improbabile: è per-modello, presa da
+  Google metadata per FB9B72); (c) firmware hardened che ignora KBP Case-1 da un central non-Android.
+- **Prossimo passo che scioglie tutto:** `emulate.py --fast-pair-gatt` (positive control, 2° nRF52
+  PCA10059) — Provider noto-buono per provare il Seeker end-to-end. In alternativa ritentare (a)
+  con buds vicinissime, e un tool che incapsula public-addr opzionale.
+- **Inventario hardware completo (confermato vs inferenze + fonti):** `docs/HARDWARE.md` — dongle
+  nRF in uso, hci0, Sonoff/Sniffle, DSD TECH FTDI, Redmi target, e i candidati 2° nRF52 (PCA10059
+  consigliato; XIAO BLE / Makerdiary-GeeekPi fattibili solo via SWD, es. Pi Pico/CMSIS-DAP).
+
 ### TODO — Fast Pair handshake item 2 (APERTO, da riprendere)
 - **Handshake vs Redmi reale: "ignored" ripetuto.** Connessi `00:13:D6:99:85:66` (indirizzo
   **stabile**, non l'RPA discoverable del pairing) anche con buds in pairing mode → nessuna
