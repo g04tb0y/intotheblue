@@ -3,6 +3,75 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
+## Resume here — 2026-11-04, SniffleScanner Phase 1 (advertising sniff + CLI) — HARDWARE-VALIDATED ✅
+
+*Terzo backend di scan: il CC2652P/Sonoff flashato Sniffle (v1.11.0, 2 Mbps — vedi
+checkpoint "FLASHED & CRC-VERIFIED" più sotto) entra nel modello scan→select→act accanto a
+nRF52/blatann e BlueZ. Spec+ticket in `.scratch/sniffle-scanner/`. Fatti gli issue 01
+(packaging) e 02 (Phase 1). Phase 2 (conn-follow) e Phase 3 (select/act + web/MCP) da fare.*
+
+- **Issue 01 — packaging (DONE).** Vendorizzato `python_cli/sniffle/` → top-level `sniffle/`
+  (in-repo come `bledev/`/`webui/`, **non** pip-installed). Droppati i moduli SDR pesanti
+  (`sniffle_sdr.py`, `channelizer.py`, `resampler.py`, `sdr_utils.py`, `coding_ble.py`) che
+  tirano numpy/scipy/SoapySDR: l'import SDR in `sniffle_hw.make_sniffle_hw` è **lazy** e solo
+  per `serport` `rfnm`/`file:`, mai raggiunto con una porta seriale reale. `__init__.py`
+  ri-trimmato. `sniffle/VENDORED.md` traccia fonte (commit `3a53f5a`, tag v1.11.0), cosa è
+  stato tolto e il "re-vendor on upgrade". `pyserial` pinnato in `requirements.txt` (unica dep
+  runtime del package trimmato). Import headless OK: `from sniffle.sniffle_hw import SniffleHW`
+  senza numpy.
+- **Issue 02 — Phase 1 `sniff.py` (DONE, headless).** Backend indipendente che avvolge
+  `SniffleHW`, **no blatann**, interfaccia `livetable` come `scan_classic`:
+  - **Autodetect** porta via glob `/dev/serial/by-id/*ITead_Sonoff*` (fallback `/dev/ttyUSB0`),
+    risolta a realpath; `--port` override. Mirror di `bledev.find_dongle_port`.
+  - **`SniffleScanner`**: `setup_sniffer(mode=PASSIVE_SCAN, chan=37, ext_adv=False)` +
+    `mark_and_flush()`, poi un thread daemon fa loop `recv_and_decode()` e piega ogni
+    `AdvaMessage`/`ScanRspMessage`/`AdvDirectIndMessage` in un `SniffleRecord` per-indirizzo
+    sotto lock. `pause()` **non** ferma la radio (il firmware sniffa comunque) ma smette di
+    *aggiornare* i record continuando a drenare la seriale (niente backlog) — non c'è
+    l'invariante connect-on-same-device dell'nRF52. `close()`: `cancel_recv()` → join →
+    `cmd_reset()` → `ser.close()`. Logging Sniffle instradato a `sniff.log` (TrivialLogger
+    stampa su stderr → corromperebbe curses; logger dedicato, `propagate=False`).
+  - **Boundary**: default **PASSIVE_SCAN** (solo ascolto, 0 TX — coerente con la postura
+    passiva). `--active`/prompt y/N abilita **ACTIVE_SCAN** che **trasmette SCAN_REQ** per
+    elicitare i nomi (etichettato come trasmittente).
+  - **Parsing AD**: Sniffle dà `adv_data` **grezzo** (non l'oggetto parsato di blatann), quindi
+    parser LTV locale `_parse_adv_data` (local name, flags, tx power, mfr data, service data
+    16-bit, service UUID 16-bit) + copie blatann-free di `_decode_protocol`/`_fast_pair` e delle
+    tabelle `_SERVICE_DATA_UUIDS`/`_APPLE_MSG_TYPES` (copiate da `scan_live`, non importate).
+    Manufacturer via loader locale di `manufact.yaml` (no `bledev`→blatann; snapshot, non il
+    SIG checkout — sufficiente per Phase 1). Addr type da `TxAdd` + top-2-bit del MSB
+    (pub/rnd-s/rnd-r/rnd-n).
+  - **COLUMNS**: Address, Addr, Name, RSSI, **Ch**, **PHY**, Conn, FastPair, Manufacturer,
+    Type, Svc, Pkt, Age — ordine di scoperta. `save_csv()` → `csv/sniffle_*.csv`.
+  - **`SniffleRecord`** espone gli attributi letti da `store.record_fields` (address, addr_type,
+    name, rssi, connectable, manufacturer, protocol, fast_pair, fp_payload, tx_power, directed,
+    services, count, first/last_seen) → le sighting Sniffle si fonderanno nelle stesse righe
+    device quando l'engine le persiste (Phase 3). **Per ora `sniff.py` NON tocca `store`**, in
+    linea con gli altri scanner standalone (`scan_live`/`scan_classic`/`scan_fused` non
+    persistono; solo `webui/engine` fa upsert). 💡 La persistenza Sniffle è Phase 3/issue 04,
+    dentro l'engine — non duplicata nel CLI.
+  - **CLI**: nuova ACTIVITIES `"sniff"` (`activity_sniff`) via `_scan_interact_loop`;
+    `_interact_sniff` apre un menu per-device **solo passivo** (dettagli osservati). Conn-follow
+    e PCAP sono Phase 2/3.
+- **Headless OK** (no HW): import del package senza SDR/numpy; `_parse_adv_data` su payload
+  sintetici (local name, Apple AirPods mfr, FE2C model-id discoverable→hex e non-discoverable→
+  "Yes"); classificazione addr type pub/rnd-s/rnd-r/rnd-n; `_manufacturer(0x4C)`="76 Apple,
+  Inc."; `update()` end-to-end su un `ADV_IND` decodificato da `DPacketMessage.from_body`
+  (addr/name/conn/fastpair giusti); tutte le COLUMNS rendono; `store.record_fields(rec,
+  'sniffle')` legge il record; `py_compile` di `sniff.py`+`cli.py`.
+- **HW-VALIDATO (2026-11-04, dongle Sonoff su `/dev/ttyUSB0`)**: il maintainer ha validato a
+  occhio la UI curses via `intotheblue.py --cli` → attività "Live BLE sniff": tabella popolata
+  in ordine di scoperta (nessun re-sort live), colonne Ch/PHY valorizzate (37 / 1M), `^P`
+  alterna SCANNING/PAUSED, `^S` salva il CSV, `Enter` mostra i dettagli passivi, `Q` esce pulito.
+  Lo smoke non-curses (`smoke_phase1.py`) era già passato. Test 3 (parità con `scan_live`) e
+  Test 4 (`--active`) restano opzionali/da-fare.
+- **Fix entry point (stesso checkpoint)**: `intotheblue.py --cli` passava il flag `--cli` dritto
+  a `cli.main()`, che lo rileggeva da `sys.argv` come activity → "Unknown activity: '--cli'".
+  Ora `cli.main(argv=...)` accetta un argv esplicito e `intotheblue.py` passa `argv=[]` per
+  forzare il menu; `python cli.py <activity>` standalone invariato (legge `sys.argv`).
+- **Prossimo**: Phase 2 (issue 03, conn-follow) e Phase 3 (issue 04, select/act + web/MCP +
+  persistenza store nell'engine) — i file 03/04 vanno creati dallo `spec.md`.
+
 ## Resume here — 2026-11-03, Fast Pair GATT: passive profile + active handshake/stress (items 1-3) — HEADLESS-VALIDATED, HW RUN PENDING
 
 *Scelta maintainer (/plan): implementare gli item 1+2+3 del blocco Fast Pair, validati
@@ -517,9 +586,37 @@ autodetects port + bridge chip, picks the matching `.hex`, prints the plan, conf
 cc2538-bsl, and flags the reset bug. `--dry-run` shows the detected plan without flashing;
 `--variant full|1m` forces the choice if autodetect can't tell. See the folder's README.
 
-**Status: NOT YET RUN on real hardware** — dongle to be flashed. Once it sniffs cleanly,
-the next step is unchanged from the ZigStar plan: wrap `SniffleHW` as a `livetable`
-scanner (`SniffleScanner`), slotting into the existing scan→select→act model.
+**Status: FLASHED & CRC-VERIFIED (2026-11-04)** ✅ — Sniffle v1.11.0 **full / CP2102N
+(2 Mbps)** variant written to the Sonoff ZBDongle-P over `--bootloader-sonoff-usb`.
+- Port: `/dev/ttyUSB0` (by-id `...ITead_Sonoff_Zigbee_3.0_USB_Dongle_Plus...-if00-port0`).
+- BSL connected: `CC1350 PG2.1 (7x7mm), 352KB Flash`; IEEE `00:12:4B:00:38:A8:01:00`.
+- Mass erase → wrote 360448 bytes → **CRC32 verified, match 0xaf0c88ea**. Clean exit, the
+  post-flash reset bug did NOT trigger (dongle still enumerates, no replug needed).
+- **Variant note:** CP2102 vs CP2102N is NOT distinguishable in software (Sniffle README
+  confirms). Maintainer chose `full` (CP2102N) — **confirmed correct** by the runtime check.
+- **RUNTIME VERIFIED (2026-11-04)** ✅ — `python_cli/sniff_receiver.py -s <port>` (run via the
+  `.venv310` python; Sniffle repo cloned under `.scratch/sonoff-sniffle-flash/Sniffle/`)
+  decoded clean BLE advertising at **2 Mbps, zero errors**: correct RSSI/channel/PHY, AdvA
+  parsed with address types (Static/RPA/NRPA), real devices (Govee `Govee_H7020`, Apple
+  mfr `4C 00`). The full/CP2102N variant is right; the dongle is a working Sniffle sniffer.
+- **Next:** build the `SniffleScanner` (`livetable` interface) per the sketch below —
+  integrate `sniffle.sniffle_hw.SniffleHW` as the third backend (scan→select→act).
+
+Earlier staging (same day), kept for reference:
+- `cc2538-bsl` cloned. ⚠️ **Upstream layout changed**: it is now a package — the script is
+  `cc2538-bsl/cc2538_bsl/cc2538_bsl.py` (no top-level `cc2538-bsl.py`). No package-relative
+  imports, so running the file directly still works. Helper default path + README updated.
+- Firmware v1.11.0 downloaded into `fw/`: both `sniffle_cc1352p1_cc2652p1.hex` (full 2 Mbps,
+  CP2102N) and `_1M.hex` (921600, plain CP2102). Variant still chosen at flash time by bridge.
+- Deps: the helper now runs cc2538-bsl with the repo's `.venv310` python (has `pyserial` +
+  `intelhex`); the Kali system `python3` lacks `intelhex`. No separate pip install.
+- **Blocker: the Sonoff is not visible to the VM** — `lsusb` shows only VMware virtual
+  devices, no `10c4:` / `ttyUSB*`. Needs VMware USB passthrough (Removable Devices →
+  Silicon Labs CP210x → Connect). Once attached, run `./flash_sonoff_sniffle.sh --dry-run`
+  (confirm the detected port/bridge/variant), then without `--dry-run` to flash.
+
+Once it sniffs cleanly, the next step is unchanged from the ZigStar plan: wrap `SniffleHW`
+as a `livetable` scanner (`SniffleScanner`), slotting into the existing scan→select→act model.
 
 **Sources:** NCC Group Sniffle README (`github.com/nccgroup/Sniffle`); Kismet "Sniffle BLE
 (Sonoff ZBDongle-P)" datasource docs (kismetwireless.net).

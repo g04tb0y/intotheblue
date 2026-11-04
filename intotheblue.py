@@ -40,10 +40,11 @@ def main() -> None:
         uvicorn.run("webui.app:app", host=args.host, port=args.port)
         return
 
-    # Default: the interactive CLI.
+    # Default: the interactive CLI. Pass an empty argv so cli.main() opens the menu
+    # rather than re-reading our already-consumed `--cli` flag as an activity name.
     import cli
     try:
-        cli.main()
+        cli.main(argv=[])
     except KeyboardInterrupt:
         print("\nBye!")
 

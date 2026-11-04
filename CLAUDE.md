@@ -23,9 +23,10 @@ Prefer NOTES.md over ad-hoc memory for anything that should survive across sessi
 
 - **Python 3.10 only.** `blatann` pulls in `pc-ble-driver-py`, which has no wheels for Python ≥ 3.11. The system Python (3.13/3.14) will fail to install deps. The pinned interpreter lives in `.venv310/`.
 - **Code and all on-screen/UI text are written in English** (chat with the maintainer is in Italian).
-- **Two independent hardware backends** — most confusion comes from mixing them up:
+- **Three independent hardware backends** — most confusion comes from mixing them up:
   - *BLE side* (`scan.py`, `scan_live.py`, `client.py`, `emulate.py`): a **Nordic nRF52 dongle flashed with Connectivity firmware**, driven through `blatann` → `pc-ble-driver-py` over serial (`/dev/ttyACM*`). This is a serial controller, **not** an HCI adapter — it never appears in `hciconfig`.
   - *Classic/BR-EDR side* (`scan_classic.py`): the **host Bluetooth adapter** via BlueZ (`bluetoothctl` subprocess). Needs `hci0` up (`sudo systemctl start bluetooth && sudo hciconfig hci0 up`). Does not use the dongle at all.
+  - *Sniffer side* (`sniff.py`): a **CC2652P (Sonoff ZBDongle-P) flashed with Sniffle firmware**, driven over USB serial (`/dev/ttyUSB*`) through the vendored in-repo `sniffle/` package — **no blatann** (needs only pyserial, fully independent like `scan_classic`). A *passive receiver*, not a controller: it listens (and, with connection following, will observe `CONNECT_IND` + followed data channels — the phone↔device relationship). Separate serial device from the nRF52, so it never contends with the blatann dongle. See `sniffle/VENDORED.md` for the vendoring (SDR modules trimmed).
 
 ## Commands
 
@@ -42,6 +43,7 @@ uv venv --python 3.10 .venv310
 .venv310/bin/python scan_live.py          # live BLE scan table
 .venv310/bin/python scan.py --timeout 8   # batch BLE scan -> csv/
 .venv310/bin/python scan_classic.py       # live Classic scan (needs hci0 up)
+.venv310/bin/python sniff.py [--active]    # live BLE sniff via Sonoff/Sniffle (CC2652P)
 .venv310/bin/python client.py --address AA:BB:CC:DD:EE:FF   # GATT explore
 .venv310/bin/python emulate.py --name TestDevice           # act as peripheral
 
@@ -68,7 +70,7 @@ There is **no automated test suite**. Verification is done by running against re
 
 **BLE plumbing — `bledev/`.** `device.py::open_device` autodetects the dongle from `/dev/serial/by-id/*nRF52*` (fallback `/dev/ttyACM0`), retries transient open failures, and takes `configure=True` for the peripheral role (the GATT server must be sized *before* `open()`). `manufacturers.py` resolves BLE Company IDs from `manufact.yaml`.
 
-**Identification & decoding.** `scan_live.DeviceRecord.update()` is where advertising is turned into identity: vendor/protocol from manufacturer data and service-data UUIDs (`_decode_protocol`), Fast Pair via service UUID `0xFE2C` (`_fast_pair`), address type, connectable flag. `client.py` reuses blatann's `UUID_DESCRIPTION_MAP` for GATT **service/characteristic common names** and `_interpret()` to decode well-known values (Battery %, Appearance, Tx Power, PnP ID, Heart Rate, DIS strings). `scan_classic.py` decodes the **Class of Device** and enriches records via `bluetoothctl info` (CoD/Icon are not emitted in the scan event stream, only in `info`).
+**Identification & decoding.** `scan_live.DeviceRecord.update()` is where advertising is turned into identity: vendor/protocol from manufacturer data and service-data UUIDs (`_decode_protocol`), Fast Pair via service UUID `0xFE2C` (`_fast_pair`), address type, connectable flag. `client.py` reuses blatann's `UUID_DESCRIPTION_MAP` for GATT **service/characteristic common names** and `_interpret()` to decode well-known values (Battery %, Appearance, Tx Power, PnP ID, Heart Rate, DIS strings). `scan_classic.py` decodes the **Class of Device** and enriches records via `bluetoothctl info` (CoD/Icon are not emitted in the scan event stream, only in `info`). `sniff.SniffleRecord.update()` is the Sniffle equivalent: Sniffle hands **raw `adv_data` bytes** (not a parsed object like blatann), so `sniff.py` has its own small blatann-free LTV parser (`_parse_adv_data`) feeding `_decode_protocol`/`_fast_pair` copies of the same vendor/Fast-Pair tables, plus a `TxAdd`+MSB address-type classifier; `SniffleRecord`'s attribute names match `store.record_fields` so its sightings merge into the same device rows once the engine persists them (Phase 3).
 
 **Passive vs active boundary.** `exposure.py` is a **passive, read-only** classifier: it only interprets advertising already collected and sends no packets. Active/intrusive test primitives (e.g. L2CAP flooding, which lives in dedicated external tooling written in C for the required socket throughput) are **not** implemented in this repo. Keep passive analysis (`exposure.py`, record enrichment) strictly non-transmitting, and gate anything that connects/writes behind an explicit user action in the interaction menu.
 

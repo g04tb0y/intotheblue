@@ -7,6 +7,12 @@ PyYAML==6.0.3
 # fastpair.py. Already present transitively; pinned explicitly as a direct dependency.
 cryptography
 
+# pyserial: host-side serial driver for the vendored in-repo `sniffle/` package (CC2652P /
+# Sonoff ZBDongle-P running Sniffle firmware — the BLE sniffer backend in sniff.py). The SDR
+# modules were trimmed on vendoring, so pyserial is Sniffle's only runtime dependency here.
+# Already present transitively; pinned explicitly as a direct dependency.
+pyserial
+
 # Web UI + MCP server (webapp/). All support Python 3.10. SQLite is stdlib (store.py).
 # mcp is pinned < 2: the v1 line provides mcp.server.fastmcp.FastMCP used by webapp.
 fastapi

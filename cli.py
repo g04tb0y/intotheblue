@@ -21,6 +21,7 @@ import scan_classic
 import scan_fused
 import scan_le
 import scan_live
+import sniff
 
 
 def _prompt(message: str, default: str | None = None) -> str:
@@ -407,6 +408,53 @@ def _run_identity(scanner, rec) -> None:
         scanner.restore_agent()
 
 
+def activity_sniff() -> None:
+    """Live BLE advertising sniff via the CC2652P (Sonoff) running Sniffle firmware."""
+    port = _prompt("Sonoff port (Enter = autodetect)") or None
+    active = _prompt("Active scan (transmits SCAN_REQ to elicit names)? y/N").lower() \
+        in ("y", "yes")
+    print("\nOpening the Sniffle dongle...")
+    scanner = sniff.SniffleScanner(port, active=active)
+    scanner.open()
+    scanner.start()
+    try:
+        _scan_interact_loop(scanner, sniff.COLUMNS, "Sniffle", _interact_sniff)
+    finally:
+        scanner.close()
+
+
+def _interact_sniff(scanner, rec) -> None:
+    """Per-device menu for a Sniffle-discovered device (Phase 1: passive detail only).
+
+    Connection following and PCAP export are Phase 2/3; for now the sniff backend only
+    surfaces what it observed passively.
+    """
+    menu.run(_sniff_device_menu(rec))
+
+
+def _sniff_device_menu(rec):
+    title = f"Sniffle {rec.address} {rec.name or ''}".rstrip()
+
+    def details() -> None:
+        print(f"\n  Address:      {rec.address} ({rec.addr_type})")
+        print(f"  Name:         {rec.name or '-'}")
+        print(f"  RSSI:         {rec.rssi}   Channel: {rec.chan}   "
+              f"PHY: {sniff._PHY_NAMES[rec.phy] if rec.phy < len(sniff._PHY_NAMES) else '?'}")
+        print(f"  Connectable:  {'yes' if rec.connectable else 'no'}"
+              f"{' (directed)' if rec.directed else ''}")
+        print(f"  Manufacturer: {rec.manufacturer or '-'}")
+        print(f"  Type:         {rec.protocol or '-'}")
+        print(f"  Fast Pair:    {rec.fast_pair or '-'}")
+        print(f"  Services:     {', '.join(sorted(rec.services)) or '-'}")
+        print(f"  Packets:      {rec.count}")
+
+    def build():
+        return [
+            ("d", "Show observed details (passive)", _leaf(details)),
+        ]
+    return menu.Menu(title, build)
+
+
 # Activity registry: key -> (label, handler).
 # To add one: define the handler and register it here.
 ACTIVITIES: dict[str, tuple[str, callable]] = {
@@ -414,6 +462,8 @@ ACTIVITIES: dict[str, tuple[str, callable]] = {
     "classic": ("Live Bluetooth Classic scan (BR/EDR) — host adapter", activity_classic),
     "le_bluez": ("Live BLE scan — fused dongle+BlueZ (identity disclosure)",
                  activity_le_bluez),
+    "sniff": ("Live BLE sniff — CC2652P/Sonoff (Sniffle; passive by default)",
+              activity_sniff),
     "webui": ("Web UI + MCP server (persists scans/GATT; owns the dongle)", activity_web),
 }
 
@@ -438,11 +488,15 @@ def _run_activity(key: str) -> None:
         print("\n  Activity interrupted.")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     # Allow launching one activity directly, e.g. `python cli.py webui`, so the web
     # UI is a startup option of intotheblue rather than a separate package to invoke.
-    if len(sys.argv) > 1:
-        key = sys.argv[1].lower()
+    # `argv` is taken from the command line when standalone; intotheblue.py passes an
+    # explicit list (e.g. `[]` to force the menu) so its own `--cli` flag, already
+    # consumed, is not mistaken here for an activity name.
+    args = sys.argv[1:] if argv is None else argv
+    if args:
+        key = args[0].lower()
         if key in ACTIVITIES:
             _run_activity(key)
             return
