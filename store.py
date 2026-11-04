@@ -99,9 +99,38 @@ CREATE TABLE IF NOT EXISTS gatt_characteristic (
     value_interp  TEXT
 );
 
+-- Followed BLE connections (Sniffle conn-follow, Phase 3b). A *new shape*, not a
+-- sighting: one row per followed connection keyed by its access address (the central
+-- picks a fresh random AA per connection, so AA identifies the connection instance).
+-- Holding central (InitA, the phone) and peripheral (AdvA, the device) on one row is
+-- the persisted phone<->device relationship. The peripheral address joins back to the
+-- device table so the Devices view can show what a device was seen connected to.
+CREATE TABLE IF NOT EXISTS connection (
+    aa              INTEGER PRIMARY KEY,
+    session_id      INTEGER,
+    central         TEXT NOT NULL,
+    central_type    TEXT,
+    peripheral      TEXT NOT NULL,
+    peripheral_type TEXT,
+    peripheral_name TEXT,
+    interval_ms     REAL,
+    latency         INTEGER,
+    timeout_ms      REAL,
+    channels        INTEGER,
+    encrypted       INTEGER DEFAULT 0,   -- 1 once LL_ENC_REQ/START_ENC seen (sticky)
+    terminated      INTEGER DEFAULT 0,   -- 1 once LL_TERMINATE_IND seen (sticky)
+    pkt_central     INTEGER,
+    pkt_peripheral  INTEGER,
+    rssi            INTEGER,
+    first_seen      REAL,
+    last_seen       REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sighting_addr ON sighting(address);
 CREATE INDEX IF NOT EXISTS idx_advsvc_addr   ON advertised_service(address);
 CREATE INDEX IF NOT EXISTS idx_gattsvc_addr  ON gatt_service(address);
+CREATE INDEX IF NOT EXISTS idx_conn_periph   ON connection(peripheral);
+CREATE INDEX IF NOT EXISTS idx_conn_central  ON connection(central);
 """
 
 # Device columns in the order the merge/insert uses (address handled separately).
@@ -192,6 +221,72 @@ def row_to_record(row: sqlite3.Row | dict) -> SimpleNamespace:
         vendor_oui=d.get("vendor_oui", "") or "",
         rssi=d.get("rssi", 0) or 0,
         services=set(),  # filled by get_device from advertised_service
+        first_seen=d.get("first_seen"),
+        last_seen=d.get("last_seen"),
+    )
+
+
+# Connection columns in insert order (aa handled separately as the key).
+_CONN_COLS = [
+    "session_id", "central", "central_type", "peripheral", "peripheral_type",
+    "peripheral_name", "interval_ms", "latency", "timeout_ms", "channels",
+    "encrypted", "terminated", "pkt_central", "pkt_peripheral", "rssi",
+    "first_seen", "last_seen",
+]
+
+
+def connection_fields(rec, session_id: int | None = None) -> dict:
+    """Flatten a `sniff.ConnectionRecord` into the ``connection`` column set.
+
+    Reads attributes with ``getattr`` defaults (no blatann, no sniff import) and
+    normalises both addresses so the peripheral joins back to the ``device`` row.
+    """
+    return {
+        "aa": int(getattr(rec, "aa", 0)),
+        "session_id": session_id,
+        "central": normalize_address(getattr(rec, "central", "")),
+        "central_type": getattr(rec, "central_type", "") or "",
+        "peripheral": normalize_address(getattr(rec, "peripheral", "")),
+        "peripheral_type": getattr(rec, "peripheral_type", "") or "",
+        "peripheral_name": getattr(rec, "peripheral_name", "") or "",
+        "interval_ms": getattr(rec, "interval_ms", 0.0),
+        "latency": getattr(rec, "latency", 0),
+        "timeout_ms": getattr(rec, "timeout_ms", 0.0),
+        "channels": getattr(rec, "channels", 0),
+        "encrypted": 1 if getattr(rec, "encrypted", False) else 0,
+        "terminated": 1 if getattr(rec, "terminated", False) else 0,
+        "pkt_central": getattr(rec, "pkt_central", 0),
+        "pkt_peripheral": getattr(rec, "pkt_peripheral", 0),
+        "rssi": getattr(rec, "rssi", 0),
+        "first_seen": getattr(rec, "first_seen", None),
+        "last_seen": getattr(rec, "last_seen", None),
+    }
+
+
+def row_to_connection(row: sqlite3.Row | dict) -> SimpleNamespace:
+    """Rebuild a `sniff.ConnectionRecord`-shaped object from a DB row.
+
+    Attribute names match `sniff.ConnectionRecord` (and thus `sniff.CONN_COLUMNS` cell
+    functions), so the stored read side renders exactly like the live table — with
+    ``encrypted``/``terminated`` back as bools and no in-memory ``packets`` buffer.
+    """
+    d = dict(row)
+    return SimpleNamespace(
+        aa=d.get("aa", 0),
+        central=d.get("central", ""),
+        central_type=d.get("central_type", ""),
+        peripheral=d.get("peripheral", ""),
+        peripheral_type=d.get("peripheral_type", ""),
+        peripheral_name=d.get("peripheral_name", "") or "",
+        interval_ms=d.get("interval_ms") or 0.0,
+        latency=d.get("latency") or 0,
+        timeout_ms=d.get("timeout_ms") or 0.0,
+        channels=d.get("channels") or 0,
+        encrypted=bool(d.get("encrypted")),
+        terminated=bool(d.get("terminated")),
+        pkt_central=d.get("pkt_central") or 0,
+        pkt_peripheral=d.get("pkt_peripheral") or 0,
+        rssi=d.get("rssi") or 0,
         first_seen=d.get("first_seen"),
         last_seen=d.get("last_seen"),
     )
@@ -321,6 +416,64 @@ class Store:
                 merged[col] = nv
         merged["address"] = new["address"]
         return merged
+
+    # --- connections (Sniffle conn-follow) ---------------------------------
+    def upsert_connection(self, rec, session_id: int | None = None) -> int:
+        """Persist a followed connection, keyed by access address. Returns the AA.
+
+        Re-upserting the same live connection (the flush thread does this repeatedly)
+        refreshes the counters/last_seen and keeps ``encrypted``/``terminated`` sticky
+        and ``first_seen`` earliest — so one followed link stays one row."""
+        f = connection_fields(rec, session_id)
+        if not f["aa"] or not f["central"] or not f["peripheral"]:
+            return 0
+        cols = ["aa"] + _CONN_COLS
+        placeholders = ", ".join("?" for _ in cols)
+        with self._lock:
+            self._conn.execute(
+                f"INSERT INTO connection ({', '.join(cols)}) VALUES ({placeholders}) "
+                "ON CONFLICT(aa) DO UPDATE SET "
+                "  session_id = excluded.session_id, "
+                "  central = excluded.central, central_type = excluded.central_type, "
+                "  peripheral = excluded.peripheral, "
+                "  peripheral_type = excluded.peripheral_type, "
+                # keep a name once learned (a later snapshot may have it blank)
+                "  peripheral_name = CASE WHEN excluded.peripheral_name != '' "
+                "    THEN excluded.peripheral_name ELSE connection.peripheral_name END, "
+                "  interval_ms = excluded.interval_ms, latency = excluded.latency, "
+                "  timeout_ms = excluded.timeout_ms, channels = excluded.channels, "
+                "  encrypted = MAX(connection.encrypted, excluded.encrypted), "
+                "  terminated = MAX(connection.terminated, excluded.terminated), "
+                "  pkt_central = excluded.pkt_central, "
+                "  pkt_peripheral = excluded.pkt_peripheral, rssi = excluded.rssi, "
+                "  first_seen = MIN(connection.first_seen, excluded.first_seen), "
+                "  last_seen = MAX(connection.last_seen, excluded.last_seen)",
+                [f[c] for c in cols],
+            )
+            self._conn.commit()
+        return f["aa"]
+
+    def list_connections(self, peripheral: str | None = None,
+                         session_id: int | None = None,
+                         since: float | None = None) -> list[dict]:
+        """Persisted connections, most recent first. Optional non-destructive filters:
+        a specific peripheral address, a scan session, or a ``last_seen`` floor."""
+        clauses, params = [], []
+        if peripheral:
+            clauses.append("peripheral = ?")
+            params.append(normalize_address(peripheral))
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if since is not None:
+            clauses.append("last_seen >= ?")
+            params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM connection{where} ORDER BY last_seen DESC", params
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- GATT --------------------------------------------------------------
     def save_gatt(self, address: str, tree: list[dict], session_id: int | None = None) -> None:

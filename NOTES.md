@@ -69,14 +69,46 @@ nRF52/blatann e BlueZ. Spec+ticket in `.scratch/sniffle-scanner/`. Issue 01 (pac
     Connect (letture ATT) → "Export PCAP" → `pcap/sniffle_conn_B6338817_*.pcap`, 4617 pacchetti,
     encapsulation "BLE Link Layer RF" (DLT 256), gerarchia `btle→btl2cap(106)→btatt(106)`: ATT
     dissezionato in tshark. NB: `pcap/` è relativo alla CWD di lancio di `cli.py` (root repo).
-  - **3b — persistenza connessioni nello `store`** (tabella `connection` nuova: AA, central/
+  - **3b — persistenza connessioni nello `store` (DONE, headless).** Tabella `connection`
+    (PK `aa`: il central sceglie un AA random per connessione → identifica l'istanza; central/
     peripheral normalizzati, addr-type, interval/latency/timeout, canali, encrypted, terminated,
-    conteggi, session_id, first/last seen; `upsert_connection`/`list_connections`/
-    `row_to_connection`, blatann-free). TODO.
-  - **3c — engine + web + MCP** (owner singolo per il Sonoff, follow session + export come metodi
-    engine, vista connessioni + download PCAP su web, tool MCP `list_connections` passivo +
-    follow/export; `_op_log` con `transport="sniffle"`). TODO.
-  - **Commit solo su richiesta esplicita, dopo validazione HW.**
+    conteggi, session_id, first/last seen; indici su peripheral/central per il join al `device`).
+    `connection_fields`/`upsert_connection`/`list_connections`/`row_to_connection`, blatann-free.
+    Upsert `ON CONFLICT(aa)`: encrypted/terminated **sticky** (`MAX`), first/last_seen `MIN`/`MAX`,
+    il nome non viene sovrascritto da uno snapshot vuoto. Headless (`:memory:`): upsert/re-upsert
+    sticky, filtri, round-trip `row_to_connection` → identico a `CONN_COLUMNS`. **Nessun wiring
+    HW ancora** (nessuno chiama `upsert_connection`): verrà cablato nell'engine in 3c, dove è
+    HW-validabile via web/MCP.
+  - **3c — engine + web + MCP (DONE, headless).** Kind `sniffle` nell'engine (`_KINDS` +
+    `_SNIFFLE_KINDS`): `start_scan("sniffle")` apre il Sonoff come scanner advertising (persiste
+    device via `upsert_device`, rende via `sniff.COLUMNS`). Follow sul web/MCP:
+    `engine.sniffle_follow(address)` → `scanner.reconfigure(follow=True, targ_mac=indirizzo
+    visto)` + `_sniffle_following=True`; quando segue, `_active_columns`/`snapshot_rows`/
+    `_flush_once` ramificano su `CONN_COLUMNS`/`upsert_connection` (row key = peripheral).
+    `sniffle_stop_follow`, `list_connections` (store read), `sniffle_export_pcap(aa)` (export del
+    buffer **live**, solo mentre la connessione è seguita). `status()` espone `following`. Tutto
+    sotto `self._lock` + `_op_log(transport="sniffle", boundary="passive")` (receive-only).
+    - **MCP**: `list_connections` (passivo), `sniffle_follow`/`sniffle_stop_follow`/
+      `sniffle_export_pcap` (radio receive-only), `scan_start` kind include `sniffle`.
+    - **Web**: `_controls.html` mostra follow/stop-follow quando il kind è sniffle + link
+      `/connections`; nuova pagina `connections.html` (relazioni central↔peripheral); in follow
+      un pulsante **"Export PCAP"** nella barra controlli (`engine.sniffle_export_pcaps()` esporta
+      **tutte** le connessioni seguite; `/api/sniffle/pcap` ritorna un frammento HTML in
+      `#pcap-result`, fuori dalla tabella così il refresh 1s non lo cancella). ⚠️ Il bottone
+      per-riga dentro `_scan_table` **non funzionava** (il click sulla riga è un listener delegato
+      a livello `document` in `tabs.js` → apriva il tab device invece di postare); spostato nei
+      controlli, dove i form funzionano. `sniffle_export_pcap(aa)` singolo resta per MCP.
+      Route `/api/sniffle/{follow,stop-follow,pcap}` + `/connections`.
+    - **Headless**: engine con scanner fittizio → columns/snapshot/flush→store/list/export ok;
+      `build_mcp` registra tutti i tool senza collisioni; compile di engine/api/mcp_server/store.
+  - **HW (3b+3c)**: follow + persistenza connessioni + lista `/connections` validati dal maintainer
+    via webui (emulate.py + nRF Connect). L'**export PCAP** era rotto dal bottone per-riga →
+    spostato nei controlli (headless-validato: `export_pcaps` scrive i pacchetti, bottone reso);
+    il click-through su HW è da riconfermare nella prossima sessione. Committato su richiesta
+    esplicita del maintainer ("sistema e committa, il resto funziona").
+  - **TODO prossima sessione (maintainer)**: **rifare l'interfaccia** — niente copia/incolla
+    dell'indirizzo per il follow; serve click-to-follow (selezione dalla tabella → azione follow),
+    come nel modello scan→select→act. L'attuale input MAC nei controlli è un ripiego.
 
 - **Issue 01 — packaging (DONE).** Vendorizzato `python_cli/sniffle/` → top-level `sniffle/`
   (in-repo come `bledev/`/`webui/`, **non** pip-installed). Droppati i moduli SDR pesanti

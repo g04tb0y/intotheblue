@@ -39,6 +39,7 @@ import scan_classic
 import scan_fused
 import scan_le
 import scan_live
+import sniff
 import store as store_module
 
 # kind -> (human label, columns, backends that can browse GATT over the dongle)
@@ -46,8 +47,12 @@ _KINDS = {
     "ble":     ("Live BLE scan — nRF52 dongle", scan_live.COLUMNS),
     "fused":   ("Live BLE scan — fused dongle + BlueZ", scan_fused.COLUMNS),
     "classic": ("Live Bluetooth Classic (BR/EDR) — host adapter", scan_classic.COLUMNS),
+    "sniffle": ("Live BLE sniff — CC2652P/Sonoff (Sniffle)", sniff.COLUMNS),
 }
 _BLE_KINDS = {"ble", "fused"}
+# Sniffle is a *separate* serial device (the Sonoff) from the nRF52, so it never contends
+# with the blatann dongle — but it still flows through the one-scanner/one-owner model.
+_SNIFFLE_KINDS = {"sniffle"}
 
 
 class Engine:
@@ -73,6 +78,10 @@ class Engine:
         self._gatt_deadline: float = 0.0         # idle auto-close time (monotonic-ish)
         self._gatt_pair_status: dict | None = None  # last Pair outcome (for UI/MCP)
         self._gatt_fp_status: dict | None = None   # last Fast Pair handshake/stress outcome
+        # Sniffle connection-follow (Phase 3c): a sniffle scan flips between advertising
+        # and following a selected peer on the *same* open Sonoff. When following, the
+        # scanner's records are ConnectionRecords, so columns/snapshot/flush switch over.
+        self._sniffle_following = False
 
     # Idle timeout for a held-open GATT session: a session pins the scan paused and
     # holds an LE link, so it must not leak if the browser tab is closed mid-session.
@@ -86,11 +95,18 @@ class Engine:
     def kinds(self) -> dict[str, str]:
         return {k: label for k, (label, _cols) in _KINDS.items()}
 
+    def _active_columns(self):
+        """The COLUMNS list for the active view: CONN_COLUMNS while a Sniffle scan is
+        following a connection, otherwise the kind's own COLUMNS."""
+        if self._kind in _SNIFFLE_KINDS and self._sniffle_following:
+            return sniff.CONN_COLUMNS
+        return _KINDS[self._kind][1]
+
     def columns(self) -> list[str]:
         """Header names of the active scan's columns, or [] when idle."""
         if self._kind is None:
             return []
-        return [h for h, _w, _fn in _KINDS[self._kind][1]]
+        return [h for h, _w, _fn in self._active_columns()]
 
     def is_scanning(self) -> bool:
         return self._scanner is not None and getattr(self._scanner, "is_scanning", False)
@@ -100,6 +116,7 @@ class Engine:
         return {
             "kind": self._kind,
             "scanning": self.is_scanning(),
+            "following": self.is_following(),
             "session_id": self._session_id,
             "devices": len(snap),
             "last_error": self._last_error,
@@ -153,6 +170,7 @@ class Engine:
             scanner = self._build_scanner(kind)
             self._scanner = scanner
             self._kind = kind
+            self._sniffle_following = False
             self._session_id = self._store.open_session(kind)
             self._start_flush(scanner, self._session_id)
             return self.status()
@@ -169,6 +187,11 @@ class Engine:
             if not sc.dongle_ok:
                 # Not fatal: fused degrades to BlueZ-only, but record why.
                 self._last_error = f"dongle unavailable ({sc.dongle_error}) — BlueZ only"
+            sc.start()
+            return sc
+        if kind == "sniffle":
+            sc = sniff.SniffleScanner(None)
+            sc.open()
             sc.start()
             return sc
         sc = scan_classic.ClassicScanner()
@@ -192,6 +215,7 @@ class Engine:
                 self._scanner = None
                 self._kind = None
                 self._session_id = None
+                self._sniffle_following = False
             return self.status()
 
     # --- live snapshot (rendered via the scanner's own COLUMNS) ------------
@@ -203,17 +227,95 @@ class Engine:
         """
         if self._scanner is None:
             return []
-        cols = _KINDS[self._kind][1]
+        cols = self._active_columns()
+        following = self._kind in _SNIFFLE_KINDS and self._sniffle_following
         rows = []
         for rec in self._scanner.snapshot():
             cells = [fn(rec) for _h, _w, fn in cols]
             note = scan_fused.target_note(rec) if self._kind in _BLE_KINDS else ""
+            # A followed-connection row keys on the peripheral (the device); an
+            # advertising row keys on its own address.
+            addr = getattr(rec, "peripheral", None) if following else getattr(rec, "address", "")
             rows.append({
-                "address": store_module.normalize_address(getattr(rec, "address", "")),
+                "address": store_module.normalize_address(addr or ""),
                 "cells": cells,
                 "target": note,
             })
         return rows
+
+    # --- Sniffle connection follow (Phase 3c) ------------------------------
+    def is_following(self) -> bool:
+        return self._kind in _SNIFFLE_KINDS and self._sniffle_following
+
+    def sniffle_follow(self, address: str) -> dict:
+        """Retarget the running Sniffle scan to follow one peer's next connection.
+
+        The scan→select→follow bridge on the web/MCP side: like the CLI's
+        "Follow this device's next connection", it reconfigures the same open Sonoff to
+        CONN_FOLLOW on the address just seen advertising (so an RPA peer is chased by its
+        current address). Receive-only — Sniffle transmits nothing in follow mode. The
+        operator must trigger the device's (re)connection for a CONNECT_IND to appear."""
+        addr = store_module.normalize_address(address)
+        with self._op_log("sniffle_follow", device=addr, boundary="passive",
+                          transport="sniffle", action="follow", start=True), self._lock:
+            if self._kind not in _SNIFFLE_KINDS or self._scanner is None:
+                raise RuntimeError("no Sniffle scan is running — start one first")
+            self._scanner.reconfigure(follow=True, targ_mac=sniff._parse_mac(addr))
+            self._sniffle_following = True
+            return self.status()
+
+    def sniffle_stop_follow(self) -> dict:
+        """Revert a following Sniffle scan to the advertising scan (same open Sonoff)."""
+        with self._op_log("sniffle_follow", boundary="passive", transport="sniffle",
+                          action="stop"), self._lock:
+            if self._kind in _SNIFFLE_KINDS and self._scanner is not None \
+                    and self._sniffle_following:
+                self._scanner.reconfigure(follow=False)
+                self._sniffle_following = False
+            return self.status()
+
+    def list_connections(self, peripheral: str | None = None,
+                         session_id: int | None = None,
+                         since: float | None = None) -> list[dict]:
+        """Persisted followed connections (read-only), most recent first."""
+        return self._store.list_connections(peripheral=peripheral,
+                                             session_id=session_id, since=since)
+
+    def sniffle_export_pcap(self, aa) -> dict:
+        """Export a *currently followed* connection's buffered packets to a PCAP.
+
+        Needs the live packet buffer (the store keeps no raw packets), so it works only
+        while that connection is being followed. `aa` is the access address (int or hex
+        string). Returns the written path and packet count."""
+        aa_int = aa if isinstance(aa, int) else int(str(aa).lower().replace("0x", ""), 16)
+        with self._op_log("sniffle_export_pcap", boundary="passive", transport="sniffle",
+                          action=f"0x{aa_int:08X}"), self._lock:
+            if self._kind not in _SNIFFLE_KINDS or self._scanner is None:
+                raise RuntimeError("no Sniffle scan is running")
+            rec = self._scanner.connections.get(aa_int)
+            if rec is None:
+                raise RuntimeError(f"no followed connection with AA 0x{aa_int:08X} "
+                                   "(it must be currently followed to export)")
+            path = sniff.export_pcap(rec)
+            return {"path": path, "packets": len(rec.packets), "aa": f"0x{aa_int:08X}"}
+
+    def sniffle_export_pcaps(self) -> list[dict]:
+        """Export every currently-followed connection to its own PCAP.
+
+        The usable "give me the capture" action: following one device typically yields one
+        or a few connections (each reconnect is a fresh access address), so this exports
+        them all in one go. Each is written only if it has buffered packets."""
+        with self._op_log("sniffle_export_pcap", boundary="passive", transport="sniffle",
+                          action="all"), self._lock:
+            if self._kind not in _SNIFFLE_KINDS or self._scanner is None:
+                raise RuntimeError("no Sniffle scan is running")
+            out = []
+            for aa, rec in list(self._scanner.connections.items()):
+                if not rec.packets:
+                    continue
+                path = sniff.export_pcap(rec)
+                out.append({"aa": f"0x{aa:08X}", "path": path, "packets": len(rec.packets)})
+            return out
 
     # --- background persistence -------------------------------------------
     def _start_flush(self, scanner, session_id: int) -> None:
@@ -245,15 +347,23 @@ class Engine:
                     self._last_error = f"gatt idle-close: {err}"
 
     def _flush_once(self, scanner, session_id, kind: str | None = None) -> int:
-        """Upsert every currently-known record into the store. Best-effort."""
+        """Upsert every currently-known record into the store. Best-effort.
+
+        While a Sniffle scan is following a connection its records are ConnectionRecords,
+        so they persist into the `connection` table rather than `device`."""
         if scanner is None:
             return 0
         kind = kind or self._kind or "ble"
         n = 0
         try:
-            for rec in scanner.snapshot():
-                if self._store.upsert_device(rec, kind, session_id):
-                    n += 1
+            if kind in _SNIFFLE_KINDS and self._sniffle_following:
+                for rec in scanner.snapshot():
+                    if self._store.upsert_connection(rec, session_id):
+                        n += 1
+            else:
+                for rec in scanner.snapshot():
+                    if self._store.upsert_device(rec, kind, session_id):
+                        n += 1
         except Exception as err:                                # noqa: BLE001
             self._last_error = f"flush: {err}"
         return n

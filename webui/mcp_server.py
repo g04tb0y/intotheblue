@@ -115,8 +115,9 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
     # --- active tools (drive the radio) ------------------------------------
     @mcp.tool()
     def scan_start(kind: str = "ble") -> dict:
-        """ACTIVE: open a backend and begin scanning. `kind` is ble | fused | classic.
-        One scan at a time (the process owns the hardware)."""
+        """ACTIVE: open a backend and begin scanning. `kind` is ble | fused | classic |
+        sniffle (CC2652P/Sonoff BLE sniffer). One scan at a time (the process owns the
+        hardware)."""
         return engine.start_scan(kind)
 
     @mcp.tool()
@@ -212,5 +213,42 @@ def build_mcp(engine: Engine | None = None) -> FastMCP:
         testing. `variant` is one of: unencrypted-zero, wrong-type, too-short, too-long,
         random-16. Needs an open GATT session (gatt_connect first)."""
         return engine.fastpair_stress(address, variant)
+
+    # --- Sniffle connection follow (Phase 3c) ------------------------------
+    @mcp.tool()
+    def list_connections(peripheral: str = "", session_id: int = 0,
+                         seen_within_seconds: float = 0.0) -> list[dict]:
+        """List persisted followed BLE connections (read-only, transmits nothing), most
+        recent first. Each row pairs a central (InitA, the phone) with a peripheral (AdvA,
+        the device) — the phone↔device relationship Sniffle observed — with access address,
+        link params, encrypted/terminated flags and packet counts. Optional filters: a
+        `peripheral` address, a `session_id`, or a `seen_within_seconds` recency window."""
+        since = (time.time() - seen_within_seconds) if seen_within_seconds else None
+        return engine.list_connections(peripheral=peripheral or None,
+                                       session_id=session_id or None, since=since)
+
+    @mcp.tool()
+    def sniffle_follow(address: str) -> dict:
+        """RECEIVE-ONLY RADIO: retarget the running Sniffle scan to follow `address`'s next
+        connection (scan→select→follow). Reconfigures the Sonoff to CONN_FOLLOW on that
+        address; the sniffer still only listens (transmits nothing). Needs a running
+        `sniffle` scan. The operator must then trigger the device's (re)connection for a
+        CONNECT_IND to be captured; captured connections appear via scan_snapshot /
+        list_connections."""
+        return engine.sniffle_follow(address)
+
+    @mcp.tool()
+    def sniffle_stop_follow() -> dict:
+        """Revert a following Sniffle scan back to the advertising scan (same Sonoff)."""
+        return engine.sniffle_stop_follow()
+
+    @mcp.tool()
+    def sniffle_export_pcap(aa: str) -> dict:
+        """Export a currently-followed connection's buffered packets to a PCAP for
+        Wireshark (CONNECT_IND + followed data; the ATT/GATT dissects when unencrypted).
+        `aa` is the connection's access address (hex, e.g. '0xBCE222F4'). Works only while
+        that connection is being followed (the store keeps no raw packets). Transmits
+        nothing. Returns {path, packets, aa}."""
+        return engine.sniffle_export_pcap(aa)
 
     return mcp

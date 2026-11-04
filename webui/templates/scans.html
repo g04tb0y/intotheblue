@@ -15,4 +15,7 @@ scanning, and several devices can stay open at once). This process owns the dong
      hx-swap="innerHTML">
   <p class="muted">No scan running.</p>
 </div>
+
+{# PCAP export result lands here — outside the table so the 1 s refresh doesn't wipe it. #}
+<div id="pcap-result"></div>
 {% endblock %}

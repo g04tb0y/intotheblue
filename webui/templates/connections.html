@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Connections · intotheblue{% endblock %}
+{% block tabname %}Connections{% endblock %}
+{% block content %}
+<h1>Followed connections <span class="muted">({{ connections|length }})</span></h1>
+<p class="muted">Each row is a BLE connection a Sniffle follow captured: a
+<strong>central</strong> (InitA — the phone, often an RPA) paired with a
+<strong>peripheral</strong> (AdvA — the device). This is the phone↔device relationship
+observed on the air. Click a peripheral to open its device tab.</p>
+
+<table class="grid">
+  <thead>
+    <tr>
+      <th>Central (phone)</th><th>CT</th>
+      <th>Peripheral (device)</th><th>PT</th><th>Name</th>
+      <th>Access addr</th><th>Interval</th><th>Enc</th><th>State</th>
+      <th>C&gt;P</th><th>P&gt;C</th><th>RSSI</th><th>Last seen</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in connections %}
+      <tr>
+        <td>{{ c.central }}</td>
+        <td>{{ c.central_type or '' }}</td>
+        <td class="clickable" data-address="{{ c.peripheral }}"
+            data-label="{{ c.peripheral_name or c.peripheral }}">{{ c.peripheral }}</td>
+        <td>{{ c.peripheral_type or '' }}</td>
+        <td>{{ c.peripheral_name or '' }}</td>
+        <td>{{ "0x%08X"|format(c.aa) }}</td>
+        <td>{{ "%.0f ms"|format(c.interval_ms or 0) }}</td>
+        <td>{% if c.encrypted %}<span class="badge active">Yes</span>{% else %}-{% endif %}</td>
+        <td>{{ 'terminated' if c.terminated else 'live' }}</td>
+        <td>{{ c.pkt_central or 0 }}</td>
+        <td>{{ c.pkt_peripheral or 0 }}</td>
+        <td>{{ c.rssi or '' }}</td>
+        <td class="muted">{{ c.last_seen|localtime }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="13" class="muted">No connections yet — start a Sniffle scan, follow a
+        device, and trigger its (re)connection.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="muted">PCAP export of a <em>currently followed</em> connection is available on the
+MCP tool <code>sniffle_export_pcap</code> and the <code>POST /api/sniffle/pcap</code> route
+(it needs the live packet buffer, so the connection must still be followed).</p>
+{% endblock %}

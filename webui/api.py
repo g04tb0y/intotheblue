@@ -178,6 +178,59 @@ def scan_export():
     return JSONResponse({"saved": path})
 
 
+# --- Sniffle connection follow (Phase 3c) -----------------------------------
+@router.post("/api/sniffle/follow", response_class=HTMLResponse)
+def sniffle_follow(request: Request, address: str = Form(...)):
+    """Retarget the running Sniffle scan to follow one peer's next connection."""
+    eng = _engine()
+    try:
+        eng.sniffle_follow(address)
+    except Exception as err:                                    # noqa: BLE001
+        eng._last_error = str(err)
+    return _controls(request)
+
+
+@router.post("/api/sniffle/stop-follow", response_class=HTMLResponse)
+def sniffle_stop_follow(request: Request):
+    """Revert a following Sniffle scan to the advertising scan."""
+    eng = _engine()
+    try:
+        eng.sniffle_stop_follow()
+    except Exception as err:                                    # noqa: BLE001
+        eng._last_error = str(err)
+    return _controls(request)
+
+
+@router.post("/api/sniffle/pcap", response_class=HTMLResponse)
+def sniffle_pcap(request: Request):
+    """Export every currently-followed connection to a PCAP (Wireshark).
+
+    Returns an HTML fragment shown inline in the scan view. The MCP tool
+    `sniffle_export_pcap(aa)` exports one specific connection with a structured result."""
+    eng = _engine()
+    try:
+        results = eng.sniffle_export_pcaps()
+    except Exception as err:                                    # noqa: BLE001
+        return HTMLResponse(f"<span class='error'>⚠ {err}</span>")
+    if not results:
+        return HTMLResponse("<span class='muted'>No connection captured yet — trigger the "
+                            "device's (re)connection, then export.</span>")
+    items = "".join(
+        f"<li>{r['aa']}: {r['packets']} packets → <code>{r['path']}</code></li>"
+        for r in results)
+    return HTMLResponse(f"<div class='action-msg'>Exported (open in Wireshark):"
+                        f"<ul>{items}</ul></div>")
+
+
+@router.get("/connections", response_class=HTMLResponse)
+def connections_page(request: Request):
+    """Persisted followed connections (phone↔device relationships), most recent first."""
+    eng = _engine()
+    return _TEMPLATES.TemplateResponse(request, "connections.html", {
+        "request": request, "connections": eng.list_connections(),
+    })
+
+
 # --- device actions ---------------------------------------------------------
 @router.post("/api/devices/{address}/gatt", response_class=HTMLResponse)
 def browse_gatt(request: Request, address: str):

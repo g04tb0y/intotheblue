@@ -1,11 +1,30 @@
 <div id="controls" class="controls">
   {% if status.scanning %}
-    <span class="badge scanning">SCANNING · {{ status.kind }}</span>
-    <span class="muted">{{ status.devices }} devices · session #{{ status.session_id }}</span>
+    {% if status.following %}
+      <span class="badge scanning">FOLLOWING · sniffle</span>
+    {% else %}
+      <span class="badge scanning">SCANNING · {{ status.kind }}</span>
+    {% endif %}
+    <span class="muted">{{ status.devices }} {{ 'connections' if status.following else 'devices' }} · session #{{ status.session_id }}</span>
     <form hx-post="/api/scan/stop" hx-target="#controls" hx-swap="outerHTML" style="display:inline">
       <button type="submit">Stop</button>
     </form>
     <button hx-post="/api/scan/export" hx-swap="none">Export CSV</button>
+    {% if status.kind == "sniffle" %}
+      {% if status.following %}
+        <form hx-post="/api/sniffle/stop-follow" hx-target="#controls" hx-swap="outerHTML" style="display:inline">
+          <button type="submit">Stop follow</button>
+        </form>
+        <button class="active" hx-post="/api/sniffle/pcap" hx-target="#pcap-result" hx-swap="innerHTML">Export PCAP</button>
+        <span class="muted">Trigger the device's (re)connection to capture a CONNECT_IND.</span>
+      {% else %}
+        <form hx-post="/api/sniffle/follow" hx-target="#controls" hx-swap="outerHTML" style="display:inline">
+          <input type="text" name="address" placeholder="AA:BB:CC:DD:EE:FF" size="18" required>
+          <button type="submit" class="active">Follow connection</button>
+        </form>
+      {% endif %}
+      <a href="/connections" target="_blank">Connections ↗</a>
+    {% endif %}
   {% else %}
     <span class="badge idle">IDLE</span>
     <form hx-post="/api/scan/start" hx-target="#controls" hx-swap="outerHTML" style="display:inline">
