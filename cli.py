@@ -409,7 +409,13 @@ def _run_identity(scanner, rec) -> None:
 
 
 def activity_sniff() -> None:
-    """Live BLE advertising sniff via the CC2652P (Sonoff) running Sniffle firmware."""
+    """Live BLE sniff via the CC2652P (Sonoff) running Sniffle firmware.
+
+    Starts as an advertising scan. Selecting a device offers "Follow this device's next
+    connection" (Phase 2), which retargets the *same* open dongle to CONN_FOLLOW on that
+    device's current address — the scan→select→follow flow, so an RPA peer is chased by the
+    address you just saw it use rather than a hand-typed MAC.
+    """
     port = _prompt("Sonoff port (Enter = autodetect)") or None
     active = _prompt("Active scan (transmits SCAN_REQ to elicit names)? y/N").lower() \
         in ("y", "yes")
@@ -424,15 +430,62 @@ def activity_sniff() -> None:
 
 
 def _interact_sniff(scanner, rec) -> None:
-    """Per-device menu for a Sniffle-discovered device (Phase 1: passive detail only).
-
-    Connection following and PCAP export are Phase 2/3; for now the sniff backend only
-    surfaces what it observed passively.
-    """
-    menu.run(_sniff_device_menu(rec))
+    """Per-device menu for a Sniffle-discovered device: passive detail + follow."""
+    menu.run(_sniff_device_menu(scanner, rec))
 
 
-def _sniff_device_menu(rec):
+def _follow_device(scanner, rec) -> None:
+    """Retarget the open dongle to follow this device's next connection, then show the
+    live connection table until the operator quits (Q) — after which we revert to the
+    advertising scan. Capturing the relationship needs a *fresh* CONNECT_IND, so the
+    operator must trigger the device's (re)connection while this is live."""
+    try:
+        targ_mac = sniff._parse_mac(rec.address)
+    except ValueError as exc:
+        print(f"  Cannot follow: {exc}")
+        return
+    print(f"\n  Following {rec.address} ({rec.name or 'unknown'}). Trigger its "
+          f"(re)connection now (toggle Bluetooth / power-cycle it, or connect from the "
+          f"phone). Press Q in the table to stop and return to the scan.")
+    _prompt("  Enter to start following")
+    scanner.reconfigure(follow=True, targ_mac=targ_mac)
+    try:
+        _scan_interact_loop(scanner, sniff.CONN_COLUMNS,
+                            f"Following {rec.address}", _interact_sniff_conn)
+    finally:
+        # Back to advertising scan on the same dongle (the outer loop uses sniff.COLUMNS).
+        scanner.reconfigure(follow=False)
+
+
+def _interact_sniff_conn(scanner, rec) -> None:
+    """Per-connection menu for a followed link (Phase 2: passive relationship detail)."""
+    menu.run(_sniff_conn_menu(rec))
+
+
+def _sniff_conn_menu(rec):
+    title = f"Connection {rec.central} <-> {rec.peripheral}"
+
+    def details() -> None:
+        print(f"\n  Central (phone):    {rec.central} ({rec.central_type})")
+        print(f"  Peripheral (device):{rec.peripheral} ({rec.peripheral_type})")
+        print(f"  Device name:        {rec.peripheral_name or '-'}  (from its advertising)")
+        print(f"  Access address:     0x{rec.aa:08X}")
+        print(f"  Conn interval:      {rec.interval_ms:.1f} ms   Latency: {rec.latency}   "
+              f"Timeout: {rec.timeout_ms:.0f} ms")
+        print(f"  Hop: {rec.hop}   Used data channels: {rec.channels}")
+        print(f"  Packets:            C->P {rec.pkt_central}   P->C {rec.pkt_peripheral}")
+        print(f"  Encrypted:          {'yes (ATT payload is ciphertext)' if rec.encrypted else 'not observed'}")
+        print(f"  State:              {'terminated' if rec.terminated else 'live'}")
+        print(f"  RSSI:               {rec.rssi}")
+
+    def build():
+        return [
+            ("d", "Show connection details (passive)", _leaf(details)),
+        ]
+    return menu.Menu(title, build)
+
+
+def _sniff_device_menu(scanner, rec):
     title = f"Sniffle {rec.address} {rec.name or ''}".rstrip()
 
     def details() -> None:
@@ -449,9 +502,12 @@ def _sniff_device_menu(rec):
         print(f"  Packets:      {rec.count}")
 
     def build():
-        return [
+        opts = [
             ("d", "Show observed details (passive)", _leaf(details)),
+            ("f", "Follow this device's next connection (Phase 2)",
+             _leaf(lambda: _follow_device(scanner, rec))),
         ]
+        return opts
     return menu.Menu(title, build)
 
 

@@ -11,18 +11,32 @@ Why a sniffer at all when the nRF52 already scans: a true BLE sniffer sees traff
 host's own controller never surfaces — most importantly it can **follow a connection**
 (observe a `CONNECT_IND` and the followed data channel), which exposes a phone↔device
 relationship directly. That is the heart of the standing project goal (attribute paired
-devices). Connection following is Phase 2; this module is **Phase 1: the advertising
-scan**, which proves the backend and slots it into the existing scan→select→act UI.
+devices). Two modes share this one backend:
 
-Boundary: the default mode is `PASSIVE_SCAN` — the radio only *listens*, it transmits
-nothing. `ACTIVE_SCAN` (opt-in via ``active=True``) additionally sends `SCAN_REQ` to
-elicit scan responses (names), so it is a transmitting mode and is labelled as such.
+- **Phase 1 — advertising scan** (``follow=False``): per-address advertising records, the
+  Sniffle equivalent of `scan_live`. Proves the backend in the scan→select→act UI.
+- **Phase 2 — connection following** (``follow=True``): `SnifferMode.CONN_FOLLOW` captures
+  each `CONNECT_IND` as a **connection record** naming both peers (central `InitA`,
+  typically the phone, ↔ peripheral `AdvA`, the device) plus the link parameters, and
+  counts the followed data-channel traffic. This is the first surface that shows a
+  phone↔device pairing directly. The device name is enriched from the device's *own*
+  advertising (kept alongside), not from the connection: modern links encrypt before GATT,
+  so the ATT payloads are ciphertext — the ``encrypted`` flag records exactly that, and
+  proper ATT decode is left to the Phase-3 PCAP export (Wireshark).
+
+Boundary: both modes are **receive-only** — Sniffle never transmits in sniffer mode (not
+even in CONN_FOLLOW; it only listens to an existing connection). The one transmitting
+option is `ACTIVE_SCAN` (opt-in via ``active=True``), which sends `SCAN_REQ` to elicit scan
+responses (names); it is labelled as such. Following needs a *fresh* `CONNECT_IND`, so the
+operator must start the sniffer and then trigger a reconnection (toggle BT / power-cycle
+the device).
 
 Sniffle's packet decoder output format is firmware-version-sensitive; re-validate against
 hardware after any re-vendor of `sniffle/` (see `sniffle/VENDORED.md`).
 
 Usage:
     python sniff.py [--port /dev/ttyUSB0] [--active]
+    python sniff.py --follow [--target AA:BB:CC:DD:EE:FF | --irk HEX]
 """
 from __future__ import annotations
 
@@ -45,6 +59,9 @@ from sniffle.packet_decoder import (
     AdvIndMessage,
     AdvNonconnIndMessage,
     AdvScanIndMessage,
+    ConnectIndMessage,
+    DataMessage,
+    LlControlMessage,
     ScanRspMessage,
     str_mac,
 )
@@ -306,29 +323,109 @@ COLUMNS: list[livetable.Column] = [
 ]
 
 
+# --- Connection-follow data model (Phase 2) ---------------------------------
+
+@dataclass
+class ConnectionRecord:
+    """One followed BLE connection, keyed by its access address.
+
+    The central is the initiator of the `CONNECT_IND` (`InitA`) — typically the phone;
+    the peripheral is the advertiser (`AdvA`) — the device. Holding both on one record is
+    the point of connection following: it is the phone↔device relationship made explicit.
+    `peripheral_name` is borrowed from the device's own advertising (see module docstring),
+    never from the (usually encrypted) connection payload.
+    """
+    aa: int                       # access address of the followed connection (the key)
+    central: str                  # InitA — initiator MAC (the phone, usually)
+    central_type: str
+    peripheral: str               # AdvA — advertiser MAC (the device)
+    peripheral_type: str
+    peripheral_name: str = ""     # enriched from the device's advertising, if seen
+    rssi: int = 0
+    interval_ms: float = 0.0      # connection interval (CONNECT_IND Interval × 1.25 ms)
+    latency: int = 0              # peripheral latency (skipped connection events)
+    timeout_ms: float = 0.0       # supervision timeout (Timeout × 10 ms)
+    hop: int = 0                  # hop increment
+    channels: int = 0             # number of used data channels in the channel map
+    pkt_central: int = 0          # C→P data-channel packets (data_dir == 0)
+    pkt_peripheral: int = 0       # P→C data-channel packets (data_dir == 1)
+    encrypted: bool = False       # saw LL_ENC_REQ / LL_START_ENC_REQ on the link
+    terminated: bool = False      # saw LL_TERMINATE_IND
+    first_seen: float = field(default_factory=time.time)
+    last_seen: float = field(default_factory=time.time)
+
+
+# Live-table columns for connection-follow mode. The two MAC columns are the deliverable:
+# central (phone) on the left, peripheral (device) on the right.
+CONN_COLUMNS: list[livetable.Column] = [
+    ("Central (phone)", 19, lambda c: c.central),
+    ("CT",              4, lambda c: c.central_type),
+    ("Peripheral (dev)", 19, lambda c: c.peripheral),
+    ("PT",              4, lambda c: c.peripheral_type),
+    ("Name",           16, lambda c: c.peripheral_name),
+    ("RSSI",            5, lambda c: str(c.rssi)),
+    ("Intv",            7, lambda c: f"{c.interval_ms:.0f}ms"),
+    ("Enc",             4, lambda c: "Yes" if c.encrypted else "-"),
+    ("C>P",             6, lambda c: str(c.pkt_central)),
+    ("P>C",             6, lambda c: str(c.pkt_peripheral)),
+    ("State",           5, lambda c: "term" if c.terminated else "live"),
+    ("Age",             4, lambda c: f"{int(time.time() - c.last_seen)}s"),
+]
+
+
+def _parse_mac(mac: str) -> bytes:
+    """Convert a display MAC ('AA:BB:CC:DD:EE:FF') to Sniffle's target byte order.
+
+    Sniffle's `targ_mac`/`cmd_mac` take the 6 bytes least-significant-first — the reverse
+    of the colon display form — matching the upstream `sniff_receiver.py`.
+    """
+    parts = mac.replace("-", ":").split(":")
+    if len(parts) != 6:
+        raise ValueError(f"MAC must be 6 colon-separated bytes, got {mac!r}")
+    return bytes(int(h, 16) for h in reversed(parts))
+
+
 # --- Scan engine ------------------------------------------------------------
 
 class SniffleScanner:
-    """Runs the Sonoff/Sniffle dongle's advertising sniff in a thread.
+    """Runs the Sonoff/Sniffle dongle in a thread — advertising scan or connection follow.
 
-    A daemon thread blocks on `recv_and_decode()` and folds each advertising/scan-response
-    message into a per-address record, exactly like `scan_live.LiveScanner`. The firmware
-    keeps sniffing regardless of our UI state, so `pause()` simply stops the thread from
-    *updating* records (it keeps draining the serial so no backlog builds) rather than
-    halting the radio — there is no connect-on-the-same-device invariant here as there is
-    for the nRF52. All Sniffle/pyserial logging is routed to a file so nothing corrupts
-    the curses screen.
+    A daemon thread blocks on `recv_and_decode()` and folds each decoded message into a
+    record, exactly like `scan_live.LiveScanner`. The firmware keeps sniffing regardless of
+    our UI state, so `pause()` simply stops the thread from *updating* records (it keeps
+    draining the serial so no backlog builds) rather than halting the radio — there is no
+    connect-on-the-same-device invariant here as there is for the nRF52. All Sniffle/pyserial
+    logging is routed to a file so nothing corrupts the curses screen.
+
+    Two modes, one class (the open/thread/pause/close/logging plumbing is identical):
+
+    - **advertising** (``follow=False``): per-address `SniffleRecord`s in ``self.devices``.
+    - **connection follow** (``follow=True``): `SnifferMode.CONN_FOLLOW`; `CONNECT_IND`s
+      become `ConnectionRecord`s in ``self.connections`` keyed by access address, and the
+      followed data-channel packets update their counters. Advertising records are still
+      kept so a `CONNECT_IND` can borrow the peripheral's advertised name. A ``targ_mac``/
+      ``targ_irk`` restricts following to one peer and enables 3-channel hopping (``hop3``).
     """
 
-    def __init__(self, port: str | None = None, active: bool = False):
+    def __init__(self, port: str | None = None, active: bool = False,
+                 follow: bool = False, targ_mac: bytes | None = None,
+                 targ_irk: bytes | None = None):
         self._port = port
         self._active = active
+        self._follow = follow
+        self._targ_mac = targ_mac
+        self._targ_irk = targ_irk
         self.devices: dict[str, SniffleRecord] = {}
+        self.connections: dict[int, ConnectionRecord] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._scanning = threading.Event()
         self._hw: SniffleHW | None = None
         self._thread: threading.Thread | None = None
+
+    @property
+    def following(self) -> bool:
+        return self._follow
 
     def open(self) -> None:
         port = self._port or find_sonoff_port()
@@ -340,15 +437,73 @@ class SniffleScanner:
         logger.setLevel(logging.WARNING)
         logger.propagate = False
         self._hw = SniffleHW(serport=port, logger=logger)
-        mode = SnifferMode.ACTIVE_SCAN if self._active else SnifferMode.PASSIVE_SCAN
-        self._hw.setup_sniffer(mode=mode, chan=37, hop3=False, ext_adv=False,
-                               phy_preload=PhyMode.PHY_2M, validate_crc=True)
+        self._setup()
+
+    def _setup(self) -> None:
+        """Push the current mode/target to the (already open) dongle.
+
+        Split out from `open()` so `reconfigure()` can re-run it on the same open HW when
+        the operator switches from advertising scan to following a selected device — the
+        whole point of the scan→select→follow flow. Safe to call only when the receive
+        thread is not running (it reads/writes the same serial port)."""
+        assert self._hw is not None
+        if self._follow:
+            # Follow mode: hop across the 3 primary adv channels only when we have a target
+            # to lock onto (hop3 requires a target). With no target we camp on one channel
+            # and catch whatever CONNECT_IND lands there, attributing after the fact.
+            hop3 = bool(self._targ_mac or self._targ_irk)
+            self._hw.setup_sniffer(mode=SnifferMode.CONN_FOLLOW, chan=37,
+                                   targ_mac=self._targ_mac, targ_irk=self._targ_irk,
+                                   hop3=hop3, ext_adv=False,
+                                   phy_preload=PhyMode.PHY_2M, validate_crc=True)
+        else:
+            mode = SnifferMode.ACTIVE_SCAN if self._active else SnifferMode.PASSIVE_SCAN
+            self._hw.setup_sniffer(mode=mode, chan=37, hop3=False, ext_adv=False,
+                                   phy_preload=PhyMode.PHY_2M, validate_crc=True)
         self._hw.mark_and_flush()  # drop stale buffered packets from before setup
 
+    def reconfigure(self, *, follow: bool, targ_mac: bytes | None = None,
+                    targ_irk: bytes | None = None) -> None:
+        """Switch the open dongle between advertising scan and following one peer.
+
+        This is the scan→select→follow bridge: the operator sees a device in the live
+        advertising table and follows it by its *current* address (captured at selection
+        time — crucial for RPA peers whose address rotates, so "see it, chase it"), with
+        3-channel hopping to reliably catch its CONNECT_IND. The receive thread is stopped
+        before reconfiguring the serial and restarted after; a fresh follow session starts
+        with an empty connection map.
+        """
+        self._stop_recv_thread()
+        self._follow = follow
+        self._targ_mac = targ_mac
+        self._targ_irk = targ_irk
+        with self._lock:
+            self.connections.clear()
+        self._setup()
+        self.start()
+
     def start(self) -> None:
+        self._stop.clear()  # may have been set by a previous reconfigure()
         self._scanning.set()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def _stop_recv_thread(self) -> None:
+        """Stop and join the receive thread without closing the serial port.
+
+        Used by `reconfigure()` to free the serial for a fresh `setup_sniffer`; `close()`
+        does the same before resetting and closing the port. `cancel_recv` unblocks the
+        thread's blocking read (SniffleHW clears its own `recv_cancelled` on the way out,
+        so the port is immediately reusable)."""
+        self._stop.set()
+        if self._hw is not None:
+            try:
+                self._hw.cancel_recv()
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=3)
+            self._thread = None
 
     def _run(self) -> None:
         assert self._hw is not None
@@ -357,21 +512,94 @@ class SniffleScanner:
                 msg = self._hw.recv_and_decode()
             except Exception:
                 break  # serial closed / cancelled during teardown
-            if msg is None or not isinstance(msg, (AdvaMessage, AdvDirectIndMessage)):
+            if msg is None:
                 continue
             # Drain-without-update while paused: keep reading so the serial never backs
             # up, but leave the records (and the table) frozen.
             if not self._scanning.is_set():
                 continue
-            if msg.crc_err:
-                continue
-            key = str_mac(msg.AdvA)
-            with self._lock:
-                rec = self.devices.get(key)
-                if rec is None:
-                    rec = SniffleRecord(address=key)
-                    self.devices[key] = rec
-                rec.update(msg)
+            if self._follow:
+                self._handle_follow(msg)
+            elif isinstance(msg, (AdvaMessage, AdvDirectIndMessage)) and not msg.crc_err:
+                self._update_adv(msg)
+
+    def _update_adv(self, msg) -> None:
+        """Fold one advertising/scan-response message into its per-address record."""
+        key = str_mac(msg.AdvA)
+        with self._lock:
+            rec = self.devices.get(key)
+            if rec is None:
+                rec = SniffleRecord(address=key)
+                self.devices[key] = rec
+            rec.update(msg)
+
+    def _handle_follow(self, msg) -> None:
+        """Dispatch a decoded message in connection-follow mode.
+
+        Advertising frames still feed `self.devices` (so a later CONNECT_IND can borrow the
+        peripheral's advertised name); `CONNECT_IND`s create the connection record; the
+        followed data-channel packets update its counters and encryption/termination state.
+        """
+        if isinstance(msg, (AdvaMessage, AdvDirectIndMessage)):
+            if not msg.crc_err:
+                self._update_adv(msg)
+        elif isinstance(msg, ConnectIndMessage):
+            if not msg.crc_err:
+                self._on_connect(msg)
+        elif isinstance(msg, DataMessage):
+            self._on_data(msg)
+
+    def _on_connect(self, msg: ConnectIndMessage) -> None:
+        """Record a newly observed connection (CONNECT_IND) — the phone↔device link."""
+        peripheral = str_mac(msg.AdvA)
+        with self._lock:
+            rec = self.connections.get(msg.aa_conn)
+            if rec is None:
+                # Count used data channels in the 37-bit channel map (5 bytes, LE).
+                channels = bin(int.from_bytes(msg.ChM, "little")).count("1")
+                name = ""
+                adv = self.devices.get(peripheral)
+                if adv is not None:
+                    name = adv.name
+                rec = ConnectionRecord(
+                    aa=msg.aa_conn,
+                    central=str_mac(msg.InitA),
+                    central_type=_addr_type_short(msg.InitA, msg.TxAdd),
+                    peripheral=peripheral,
+                    peripheral_type=_addr_type_short(msg.AdvA, msg.RxAdd),
+                    peripheral_name=name,
+                    interval_ms=msg.Interval * 1.25,
+                    latency=msg.Latency,
+                    timeout_ms=msg.Timeout * 10,
+                    hop=msg.Hop,
+                    channels=channels,
+                )
+                self.connections[msg.aa_conn] = rec
+            rec.rssi = msg.rssi
+            rec.last_seen = time.time()
+
+    def _on_data(self, msg: DataMessage) -> None:
+        """Fold a followed data-channel packet into its connection record."""
+        with self._lock:
+            rec = self.connections.get(msg.aa)
+            if rec is None:
+                return  # data for a connection whose CONNECT_IND we never saw
+            rec.last_seen = time.time()
+            if msg.data_dir:  # 1 = peripheral -> central
+                rec.pkt_peripheral += 1
+            else:             # 0 = central -> peripheral
+                rec.pkt_central += 1
+            # Enriching the peripheral name late (it may have advertised between the
+            # CONNECT_IND and now): keep the first non-empty we learn.
+            if not rec.peripheral_name:
+                adv = self.devices.get(rec.peripheral)
+                if adv is not None and adv.name:
+                    rec.peripheral_name = adv.name
+            if isinstance(msg, LlControlMessage):
+                if msg.opcode in (0x03, 0x05):  # LL_ENC_REQ / LL_START_ENC_REQ
+                    rec.encrypted = True
+                elif msg.opcode == 0x02:         # LL_TERMINATE_IND
+                    rec.terminated = True
 
     def pause(self) -> None:
         self._scanning.clear()
@@ -383,20 +611,16 @@ class SniffleScanner:
     def is_scanning(self) -> bool:
         return self._scanning.is_set()
 
-    def snapshot(self) -> list[SniffleRecord]:
+    def snapshot(self) -> list:
+        """Records for the live table: connections in follow mode, else adv devices."""
         with self._lock:
+            if self._follow:
+                return list(self.connections.values())
             return list(self.devices.values())
 
     def close(self) -> None:
-        self._stop.set()
         self._scanning.clear()
-        if self._hw is not None:
-            try:
-                self._hw.cancel_recv()  # unblock the recv loop's blocking read
-            except Exception:
-                pass
-        if self._thread is not None:
-            self._thread.join(timeout=3)
+        self._stop_recv_thread()
         if self._hw is not None:
             try:
                 self._hw.cmd_reset()
@@ -409,6 +633,8 @@ class SniffleScanner:
 
     def save_csv(self) -> str:
         os.makedirs("csv", exist_ok=True)
+        if self._follow:
+            return self._save_conn_csv()
         path = f"csv/sniffle_{int(time.time())}.csv"
         headers = [h for h, _, _ in COLUMNS] + ["Services", "FirstSeen"]
         with self._lock, open(path, "w", newline="") as f:
@@ -422,18 +648,50 @@ class SniffleScanner:
                 writer.writerow(row)
         return path
 
+    def _save_conn_csv(self) -> str:
+        """Write the connection-follow table to csv/sniffle_conn_*.csv (discovery order)."""
+        path = f"csv/sniffle_conn_{int(time.time())}.csv"
+        headers = [h for h, _, _ in CONN_COLUMNS] + ["AccessAddr", "Latency",
+                                                      "TimeoutMs", "Channels", "FirstSeen"]
+        with self._lock, open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            for c in self.connections.values():
+                row = [func(c) for _, _, func in CONN_COLUMNS]
+                row.append(f"0x{c.aa:08X}")
+                row.append(str(c.latency))
+                row.append(f"{c.timeout_ms:.0f}")
+                row.append(str(c.channels))
+                row.append(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(c.first_seen)))
+                writer.writerow(row)
+        return path
 
-def run(port: str | None = None, active: bool = False) -> SniffleRecord | None:
-    """Entry point: open the Sonoff/Sniffle dongle and start the live UI."""
+
+def run(port: str | None = None, active: bool = False, follow: bool = False,
+        targ_mac: bytes | None = None, targ_irk: bytes | None = None):
+    """Entry point: open the Sonoff/Sniffle dongle and start the live UI.
+
+    In follow mode the table shows connection records (and CONN_COLUMNS); otherwise it
+    shows advertising records. Returns the record the operator selected, or None.
+    """
     print("Opening the Sniffle dongle...")
-    scanner = SniffleScanner(port, active=active)
+    scanner = SniffleScanner(port, active=active, follow=follow,
+                             targ_mac=targ_mac, targ_irk=targ_irk)
     scanner.open()
     scanner.start()
+    columns = CONN_COLUMNS if follow else COLUMNS
+    title = "Sniffle — connection follow" if follow else "Sniffle"
+    if follow:
+        print("Following connections: start the sniffer, then trigger a reconnection "
+              "(toggle BT / power-cycle the device) to capture its CONNECT_IND.")
     try:
-        selected = livetable.run(scanner, COLUMNS, title="Sniffle")
+        selected = livetable.run(scanner, columns, title=title)
     finally:
         scanner.close()
-    print(f"Scan finished. {len(scanner.devices)} devices seen.")
+    if follow:
+        print(f"Follow finished. {len(scanner.connections)} connections seen.")
+    else:
+        print(f"Scan finished. {len(scanner.devices)} devices seen.")
     return selected
 
 
@@ -444,5 +702,18 @@ if __name__ == "__main__":
                         help="Sonoff serial port (default: autodetect the ITead by-id link)")
     parser.add_argument("--active", action="store_true",
                         help="Active scan: transmit SCAN_REQ to elicit names (default: passive)")
+    parser.add_argument("--follow", action="store_true",
+                        help="Connection-follow mode: capture CONNECT_IND + followed link")
+    parser.add_argument("--target", default=None, metavar="MAC",
+                        help="Follow only this peer MAC (enables 3-channel hopping)")
+    parser.add_argument("--irk", default=None, metavar="HEX",
+                        help="Follow only the peer with this IRK (hex; for RPA devices)")
     args = parser.parse_args()
-    run(args.port, active=args.active)
+    if (args.target or args.irk) and not args.follow:
+        parser.error("--target/--irk require --follow")
+    if args.target and args.irk:
+        parser.error("specify at most one of --target / --irk")
+    targ_mac = _parse_mac(args.target) if args.target else None
+    targ_irk = bytes.fromhex(args.irk) if args.irk else None
+    run(args.port, active=args.active, follow=args.follow,
+        targ_mac=targ_mac, targ_irk=targ_irk)

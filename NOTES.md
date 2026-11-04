@@ -3,12 +3,64 @@
 Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
 detailed change history; this file holds rationale, plans, and open questions.
 
-## Resume here — 2026-11-04, SniffleScanner Phase 1 (advertising sniff + CLI) — HARDWARE-VALIDATED ✅
+## Resume here — 2026-11-04, SniffleScanner Phase 2 (connection follow) — HARDWARE-VALIDATED ✅
 
 *Terzo backend di scan: il CC2652P/Sonoff flashato Sniffle (v1.11.0, 2 Mbps — vedi
 checkpoint "FLASHED & CRC-VERIFIED" più sotto) entra nel modello scan→select→act accanto a
-nRF52/blatann e BlueZ. Spec+ticket in `.scratch/sniffle-scanner/`. Fatti gli issue 01
-(packaging) e 02 (Phase 1). Phase 2 (conn-follow) e Phase 3 (select/act + web/MCP) da fare.*
+nRF52/blatann e BlueZ. Spec+ticket in `.scratch/sniffle-scanner/`. Issue 01 (packaging) e 02
+(Phase 1) committati (`83f3839`). Phase 3 (select/act + web/MCP) da fare.*
+
+- **Issue 03 — Phase 2 conn-follow (DONE, headless).** Modalità follow dello stesso backend
+  `sniff.py` (non un nuovo script): `SniffleScanner(follow=True, targ_mac=…, targ_irk=…)` →
+  `SnifferMode.CONN_FOLLOW`. Senza target campa su un canale e cattura **ogni** `CONNECT_IND`
+  (`hop3=False`); con target MAC/IRK fa `hop3=True` inseguendo un peer su 37/38/39.
+  - **`ConnectionRecord`** (keyed by access address): central (`InitA`=telefono) ↔ peripheral
+    (`AdvA`=device) con i due addr-type, AA, interval (×1.25ms), latency, timeout (×10ms), hop,
+    conteggio canali dati usati, pacchetti per direzione (C→P/P→C), flag **encrypted**
+    (`LL_ENC_REQ`/`LL_START_ENC`) e **terminated** (`LL_TERMINATE_IND`), rssi.
+  - **Nome device onesto**: preso dall'advertising *del device stesso* (i record adv restano
+    vivi in follow mode e il `CONNECT_IND` prende in prestito il nome via `AdvA`), **non** dal
+    link: i link moderni cifrano prima del GATT → l'ATT è ciphertext; il flag `encrypted`
+    registra proprio quello. Decode ATT/GATT vero = export PCAP Phase 3 (Wireshark).
+  - **`CONN_COLUMNS`** (2ª lista colonne) + `snapshot()`/`save_csv()` che ramificano su modalità
+    (`csv/sniffle_conn_*.csv`). `livetable` invariato. `_parse_mac` (reverse del display, come
+    `sniff_receiver.py`).
+  - **Design scan→select→follow (IL punto, deciso 2026-11-04 dopo il collaudo HW):** inseguire
+    un peer **senza target** è inaffidabile — diag (`.scratch/sniffle-scanner/follow_diag.py`)
+    su HW: 15s di CONN_FOLLOW senza target → tanta advertising (AdvInd/AdvNonconnInd/ScanReq/
+    ScanRsp) ma **0 CONNECT_IND** (parcheggiati sul solo ch37, cattura a fortuna). E i device
+    bonded ruotano la **RPA** di continuo, quindi un MAC digitato a mano è inutile. Soluzione:
+    `SniffleScanner.reconfigure(follow=True, targ_mac=…)` ritarga lo **stesso dongle aperto** da
+    PASSIVE_SCAN a CONN_FOLLOW (hop3=True) sull'indirizzo **corrente** del device, catturato al
+    momento della selezione — "come lo vedo da scan lo inseguo". Thread recv fermato→
+    `setup_sniffer`→`mark_and_flush`→riavviato (serial non conteso; `recv_cancelled` si
+    auto-resetta). `_setup()` estratto da `open()`; `_stop_recv_thread()` condiviso con `close()`.
+  - **CLI**: `activity_sniff` è un normale scan advertising; selezionando un device il menu offre
+    **"Follow this device's next connection"** (`_follow_device`): prompt operatore ("forza la
+    (ri)connessione ora"), `reconfigure(follow=True, targ_mac=rec.address)`, poi
+    `_scan_interact_loop(CONN_COLUMNS, _interact_sniff_conn)`; all'uscita (Q) `reconfigure(
+    follow=False)` torna allo scan. Standalone per target statici/IRK noti resta:
+    `sniff.py --follow [--target MAC | --irk HEX]`.
+  - **Boundary**: CONN_FOLLOW è **receive-only** (Sniffle non trasmette, ascolta solo un link
+    esistente); l'unica modalità TX resta `--active` (SCAN_REQ) in Phase 1.
+  - **Headless-validato**: `py_compile`; fold di `_on_connect`/`_on_data` con messaggi fittizi
+    (central/peripheral, interval/timeout/canali, C→P/P→C, `LL_ENC_REQ`→encrypted, CSV).
+- **HW-VALIDATO (2026-11-04, positive-control)**: validato col pattern a controllo noto —
+  `emulate.py --name TestDevice` (peripheral BLE connectable sull'nRF52, ADV_IND legacy 1M) +
+  `cli.py sniff` (Sonoff) → selezionato `TestDevice` → "Follow this device's next connection" →
+  **nRF Connect** sul telefono (OnePlus Nord, sideload APK Nordic verificato) fa Connect. Catturate
+  2 connessioni (CSV `sniffle_conn_1793811283.csv`): **central `44:4F:B3:4B:D4:46` (rnd-r = RPA del
+  telefono) ↔ peripheral `CE:C1:1B:51:DD:23` (rnd-s, nRF52) name=TestDevice**, interval 45ms,
+  timeout 5000ms, 37 canali, AA diversi per i due Connect/Disconnect, ~700 pacchetti per direzione.
+  `Enc=-` corretto (Connect senza Bond). Il telefono usa **RPA** (`rnd-r`) e la relazione è stata
+  attribuita comunque — conferma il valore per l'obiettivo "device accoppiati".
+  - **Lezione sui device audio**: le cuffie Redmi (`00:13:D6:99:85:66`, pub, Fast Pair) **non**
+    producono `CONNECT_IND` BLE sulla riconnessione — audio = **BR/EDR Classic**, invisibile a uno
+    sniffer BLE. Il link BLE compare solo durante l'handshake Fast Pair GATT (primo pairing). Per
+    quei casi serve il lato Classic, non il conn-follow BLE. (Diag `follow_diag.py`: target …85:66
+    hop3 → tanta advertising, 0 CONNECT_IND perché nessuna connessione *BLE* avviene.)
+- **Prossimo: Phase 3 (issue 04)** — select/act (export PCAP via `sniffle.pcap`, dump GATT),
+  persistenza connessioni nello `store`, e surfacing web/MCP. **Commit solo su richiesta esplicita.**
 
 - **Issue 01 — packaging (DONE).** Vendorizzato `python_cli/sniffle/` → top-level `sniffle/`
   (in-repo come `bledev/`/`webui/`, **non** pip-installed). Droppati i moduli SDR pesanti
