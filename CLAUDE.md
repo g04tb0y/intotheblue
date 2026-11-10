@@ -10,14 +10,17 @@ Roadmap direction (keep new work consistent with this): cover every aspect of th
 
 ## NOTES.md — working memory
 
-`NOTES.md` is the project's running memory and scratchpad. **Read it at the start of a session and keep it current as you work** — update it in the same change as the work it describes. It holds:
+`NOTES.md` is the project's running memory and scratchpad. **Read it at the start of a session and keep it current as you work** — update it in the same change as the work it describes. It is organised as:
 
-- **Actions log** — what was done and why (rationale beyond what git shows).
-- **TODO** — planned / next work.
-- **Design decisions** — choices made and the reasoning, so they aren't re-litigated.
-- **Open questions** — things to study or evaluate (protocol details, hardware quirks, ideas not yet decided).
+- **Current state** — a single "where we are now" block at the top: the last work landed, the immediate next step, what's still open, the hardware in use, and the validated checkpoints. Keep this to **one** block (don't stack a new "Resume here" each session — fold the previous state into the Actions log and rewrite this).
+- **TODO** — planned / next work; keep **only open items** (done items move to the Actions log, not a growing `[x]` list).
+- **Design decisions** — choices made and the reasoning, so they aren't re-litigated (the non-obvious "why", not what's already in this file's Architecture section).
+- **Findings** — durable empirical lessons from real runs (device/protocol/hardware behaviour), not one-off run details.
+- **Hardware** — a pointer to `docs/HARDWARE.md` plus the few operationally-live facts.
+- **Goals (standing)** and **Open questions** — the standing objective and things still to study/evaluate (protocol details, hardware quirks, ideas not yet decided).
+- **Actions log** (recent first) — what was done and why (rationale beyond what git shows); a condensed log, **not** a full changelog (git is that).
 
-Prefer NOTES.md over ad-hoc memory for anything that should survive across sessions.
+Prefer NOTES.md over ad-hoc memory for anything that should survive across sessions. **Git holds the detailed history** — drop obsolete narrative here rather than letting it accumulate.
 
 ## Environment & hard constraints
 
