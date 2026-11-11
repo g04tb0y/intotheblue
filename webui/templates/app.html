@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>intotheblue</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/vendor/htmx.min.js"></script>
+</head>
+{# Single-page application shell. The three fixed tabs (Scan / Devices / Logs) are each an
+   <iframe> of the matching bare pane page (/panes/*); opening a scanned device (or a followed
+   connection) adds a further closable tab. Switching tabs is pure show/hide — panes are never
+   reloaded — so the opened device tabs survive moving between Scan, Devices and Logs, and the
+   live scan keeps polling inside its hidden iframe. The iframe-per-tab isolation (ids, styles,
+   per-device GATT session) is the same reason the device detail was already iframed; here it is
+   simply extended to the three top-level views. tabs.js (loaded in the shell and in every pane)
+   routes a row click inside a pane up to this shell via window.top. #}
+<body>
+  <header>
+    <span class="brand">intotheblue</span>
+  </header>
+  <main>
+    <div id="tabbar">
+      <button class="tab-btn{% if active_tab == 'scans' %} active{% endif %}"
+              data-pane="scans" onclick="activateTab('scans')">Scan</button>
+      <button class="tab-btn{% if active_tab == 'devices' %} active{% endif %}"
+              data-pane="devices" onclick="activateTab('devices')">Devices</button>
+      <button class="tab-btn{% if active_tab == 'logs' %} active{% endif %}"
+              data-pane="logs" onclick="activateTab('logs')">Logs</button>
+    </div>
+    <div id="panes">
+      <div class="tab-view{% if active_tab == 'scans' %} active{% endif %}" id="pane-scans">
+        <iframe class="device-frame" src="/panes/scans"></iframe>
+      </div>
+      <div class="tab-view{% if active_tab == 'devices' %} active{% endif %}" id="pane-devices">
+        <iframe class="device-frame" src="/panes/devices"></iframe>
+      </div>
+      <div class="tab-view{% if active_tab == 'logs' %} active{% endif %}" id="pane-logs">
+        <iframe class="device-frame" src="/panes/logs"></iframe>
+      </div>
+    </div>
+  </main>
+  {# Always-on tail of the structured event log (see the Logs tab for the full history). #}
+  <footer id="logtail" hx-get="/api/logs/tail" hx-trigger="load, every 3s" hx-swap="innerHTML">
+    <span class="muted">log…</span>
+  </footer>
+  <script src="/static/tabs.js"></script>
+</body>
+</html>

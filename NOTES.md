@@ -73,6 +73,16 @@ checkpoint (see Findings).
 
 ## Design decisions
 
+- **Web UI theme = CSS token rewrite, not a rebuild.** The "Arasaka/cyberpunk" look
+  (`webui/static/style.css`) is a *values* rewrite of the existing `:root` token palette plus
+  additive rules — token/class NAMES are unchanged, so every component inherits the new look
+  with **zero** markup/HTMX/`tabs.js` changes. Deliberately balanced (it's a data-dense tool):
+  palette + chamfered (`clip-path`) edges + light HUD framing, **no** animated scanlines/neon.
+  The palette is anchored to the passive/active boundary — cyan/teal (`--accent`/`--scan`) =
+  passive/safe, red (`--err`) = active/transmitting — so ACTIVE vs PASSIVE badges read at a
+  glance (see the Logs page). Chamfer technique notes live in the CSS header comment: clip-path
+  clips borders too (the notched corner *is* the look on small controls) and clips outset
+  box-shadow, so panel glow uses `filter: drop-shadow()` and left accent bars use inset shadow.
 - **The MCP/webui server is the agent's end-to-end test surface — use it, don't stop at
   "headless".** When a server is up, drive it (JSON API `http://127.0.0.1:<port>/api/...` or
   MCP at `/mcp`) against the real dongle. Bounds that are real (state them, don't use as an
@@ -262,6 +272,29 @@ Full inventory (confirmed vs inferred, with sources) in `docs/HARDWARE.md`. Live
 
 Rationale beyond what git shows; not a complete changelog (git is).
 
+- **Web UI → true single-page app (SPA shell)** (2026-11-11). The maintainer wanted the three
+  top-level views to behave as one page: returning to Scan must **not** close the opened device
+  tabs. Reworked from the old model (the "home" tab *was* the page, nav links navigated away,
+  closing all device tabs) into a shell (`app.html`) with **three fixed iframe tabs**
+  (Scan/Devices/Logs → `/panes/scans|devices|logs`) + on-demand closable device/connection
+  tabs. Extended the already-committed device-detail iframe-isolation pattern to the three
+  panes; switching tabs is show/hide (no reload) so tabs persist and the scan keeps polling in
+  its hidden iframe. `tabs.js` now runs in both the shell and every bare iframe (branch on
+  `#tabbar` presence) and routes a pane row-click up to the shell via `window.top`. New routes:
+  `/` `/devices` `/logs` `/connections` all return the shell; `/panes/*` serve the bare bodies;
+  pane forms post to `/panes/*` and prune redirects to `/panes/devices` so the iframe never
+  nests the shell. Validated via headless Chromium (shell + panes render, routes 200). Left
+  uncommitted, server left running on :8000 for maintainer click-through.
+- **Web UI "Arasaka" cyberpunk restyle** (2026-11-11). Retheme of `webui/static/style.css`
+  from the reference images in `UI_reference_style_only/` (staged by `d630c57`). Scope chosen
+  with the maintainer: **web UI only** (curses CLI left as-is), **balanced** intensity
+  (readability first — no scanlines/neon), **no new font** (system stack + mono for hex). Done
+  as a token-value rewrite + additive rules (chamfered `clip-path` edges, cyan/amber/red
+  semantic palette mapped to the passive/active boundary, mono HUD headers, left accent bars,
+  corner HUD code). No markup/HTMX/`tabs.js` touched. Validated with headless Chromium
+  screenshots of `/`, `/devices/{addr}`, `/logs` against the live server (438 persisted
+  devices) — all render, dense tables stay legible, ACTIVE(red)/PASSIVE(teal) badges clear.
+  Not yet maintainer-validated in a real browser; left in the working tree (uncommitted).
 - **Sniffle backend, Phases 1-3** (2026-11-04). Third scan radio, independent of blatann.
   Phase 1: `sniff.py` wraps `SniffleHW` as a `livetable` scanner (local LTV parser since
   Sniffle hands raw `adv_data`, blatann-free copies of the vendor/Fast-Pair tables; default

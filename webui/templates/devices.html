@@ -10,7 +10,7 @@
   <p class="action-msg">Pruned {{ pruned }} old device(s) from the store.</p>
 {% endif %}
 
-<form method="get" action="/devices" class="filters">
+<form method="get" action="/panes/devices" class="filters">
   <input type="text" name="search" value="{{ search }}" placeholder="name / address / vendor">
   <select name="transport">
     <option value="">any transport</option>

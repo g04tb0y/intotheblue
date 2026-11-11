@@ -59,11 +59,27 @@ def _engine():
 
 
 # --- pages ------------------------------------------------------------------
+def _shell(request: Request, active_tab: str) -> HTMLResponse:
+    """The single-page application shell (app.html): a fixed Scan/Devices/Logs tab strip of
+    iframes plus on-demand device/connection tabs. The top-level routes all return this same
+    shell (differing only in which fixed tab starts active) so a deep link lands in the SPA;
+    the actual view bodies are served bare by the /panes/* routes below."""
+    return _TEMPLATES.TemplateResponse(request, "app.html", {
+        "request": request, "active_tab": active_tab,
+    })
+
+
 @router.get("/", response_class=HTMLResponse)
-def scans_page(request: Request):
+def home(request: Request):
+    return _shell(request, "scans")
+
+
+@router.get("/panes/scans", response_class=HTMLResponse)
+def scans_pane(request: Request):
+    """Bare Scan view, embedded as the shell's Scan tab (iframe)."""
     eng = _engine()
     return _TEMPLATES.TemplateResponse(request, "scans.html", {
-        "request": request, "kinds": eng.kinds(), "status": eng.status(),
+        "request": request, "kinds": eng.kinds(), "status": eng.status(), "bare": True,
     })
 
 
@@ -83,9 +99,16 @@ def _recent_cutoff(recent: str) -> float | None:
 
 
 @router.get("/devices", response_class=HTMLResponse)
-def devices_page(request: Request, search: str = "", transport: str = "",
+def devices_page(request: Request):
+    return _shell(request, "devices")
+
+
+@router.get("/panes/devices", response_class=HTMLResponse)
+def devices_pane(request: Request, search: str = "", transport: str = "",
                  fast_pair_only: bool = False, recent: str = "24h", session: bool = False,
                  pruned: int | None = None):
+    """Bare Devices view, embedded as the shell's Devices tab (iframe). Its filter/prune forms
+    post back here (bare) so the iframe stays chrome-free rather than reloading the whole shell."""
     eng = _engine()
     since = _recent_cutoff(recent)
     session_id = eng.current_session_id() if session else None
@@ -97,7 +120,7 @@ def devices_page(request: Request, search: str = "", transport: str = "",
         "transport": transport, "fast_pair_only": fast_pair_only,
         "kinds": eng.kinds(), "recent": recent, "recent_windows": _RECENT_WINDOWS,
         "session": session, "session_scoped": session_id is not None,
-        "prune_windows": _PRUNE_WINDOWS, "pruned": pruned,
+        "prune_windows": _PRUNE_WINDOWS, "pruned": pruned, "bare": True,
     })
 
 
@@ -108,9 +131,10 @@ def devices_prune(older_than: str = Form("7d")):
     (a confirm dialog in the UI); the recency/session filters only hide, this removes."""
     seconds = _PRUNE_WINDOWS.get(older_than)
     if seconds is None:
-        return RedirectResponse("/devices", status_code=303)
+        return RedirectResponse("/panes/devices", status_code=303)
     removed = _engine().prune_devices(time.time() - seconds)
-    return RedirectResponse(f"/devices?pruned={removed}", status_code=303)
+    # Bounce back to the bare pane (the form lives inside the Devices iframe), not the shell.
+    return RedirectResponse(f"/panes/devices?pruned={removed}", status_code=303)
 
 
 @router.get("/devices/{address}", response_class=HTMLResponse)
@@ -224,10 +248,17 @@ def sniffle_pcap(request: Request):
 
 @router.get("/connections", response_class=HTMLResponse)
 def connections_page(request: Request):
-    """Persisted followed connections (phone↔device relationships), most recent first."""
+    # Connections is not one of the three fixed tabs; it opens as an on-demand tab from the
+    # scan controls' "Connections" link. A direct hit lands in the shell (Scan active).
+    return _shell(request, "scans")
+
+
+@router.get("/panes/connections", response_class=HTMLResponse)
+def connections_pane(request: Request):
+    """Bare followed-connections view (phone↔device relationships), opened as an on-demand tab."""
     eng = _engine()
     return _TEMPLATES.TemplateResponse(request, "connections.html", {
-        "request": request, "connections": eng.list_connections(),
+        "request": request, "connections": eng.list_connections(), "bare": True,
     })
 
 
@@ -454,14 +485,20 @@ def _distinct_events(eng) -> list[str]:
 
 
 @router.get("/logs", response_class=HTMLResponse)
-def logs_page(request: Request, event: str = "", device: str = "", action: str = "",
+def logs_page(request: Request):
+    return _shell(request, "logs")
+
+
+@router.get("/panes/logs", response_class=HTMLResponse)
+def logs_pane(request: Request, event: str = "", device: str = "", action: str = "",
               limit: int = 200):
-    """Browse the JSONL event history: filter by event / device / action, export."""
+    """Bare Logs view, embedded as the shell's Logs tab (iframe): filter by event / device /
+    action, export. Its filter form posts back here (bare) to keep the iframe chrome-free."""
     eng = _engine()
     events = eng.query_events(event=event, device=device, action=action, limit=limit)
     return _TEMPLATES.TemplateResponse(request, "logs.html", {
         "request": request, "events": events, "event": event, "device": device,
-        "action": action, "limit": limit, "event_names": _distinct_events(eng),
+        "action": action, "limit": limit, "event_names": _distinct_events(eng), "bare": True,
     })
 
 

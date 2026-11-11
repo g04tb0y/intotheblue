@@ -23,7 +23,9 @@
           <button type="submit" class="active">Follow connection</button>
         </form>
       {% endif %}
-      <a href="/connections" target="_blank">Connections ↗</a>
+      {# Opens as an on-demand SPA tab (handled by tabs.js, routed up to the shell). #}
+      <a href="/connections" data-tab-src="/panes/connections" data-tab-key="connections"
+         data-tab-label="Connections">Connections ↗</a>
     {% endif %}
   {% else %}
     <span class="badge idle">IDLE</span>

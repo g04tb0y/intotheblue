@@ -12,4 +12,7 @@
 {% else %}
   <span class="muted">no activity yet</span>
 {% endif %}
-<a class="muted log-more" href="/logs">more →</a>
+{# In the SPA shell this just activates the Logs tab (keeps open device tabs); as a plain
+   link (standalone pages, no shell) it falls through to navigate to /logs. #}
+<a class="muted log-more" href="/logs"
+   onclick="if(window.activateTab){activateTab('logs');return false;}">more →</a>
