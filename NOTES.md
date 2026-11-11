@@ -1,22 +1,25 @@
 # NOTES
 
-Working memory for this project. See `CLAUDE.md` for how it's used. Git holds the
-detailed change history; this file holds rationale, plans, and open questions.
+Working memory for this project — a **Bluetooth development and diagnostics bench**:
+identify devices and interact with the protocol at every layer to diagnose what they
+expose. See `CLAUDE.md` for how it's used. Git holds the detailed change history; this
+file holds rationale, plans, and open questions.
 
-## Current state — 2026-11-04
+## Current state — 2026-11-11
 
-**Last work: the Sniffle backend (3rd scan radio) through Phase 3.** The CC2652P/Sonoff
-flashed with Sniffle (v1.11.0, 2 Mbps) is now a full scan→select→act backend alongside
-nRF52/blatann and BlueZ. Advertising scan (Phase 1), connection following (Phase 2), PCAP
-export + a persisted `connection` table + engine/web/MCP wiring (Phase 3) are all done and
-hardware-validated via the positive-control pattern (`emulate.py --name TestDevice` as the
-peripheral + nRF Connect on a phone forcing the connect). Spec/tickets in
-`.scratch/sniffle-scanner/`. Committed through `b0943ac`.
+**Last work: the web UI reworked into a true single-page app shell (SPA).** The three
+top-level views (Scan/Devices/Logs) are now fixed iframe tabs in one shell (`app.html`),
+with on-demand closable device/connection tabs; returning to Scan no longer closes open
+device tabs and the hidden scan keeps polling. Preceded the same day by the "Arasaka"
+cyberpunk restyle of `webui/static/style.css` (token-value rewrite, web UI only). Both are
+validated via headless Chromium **only** — not yet maintainer-validated in a real browser —
+and left **uncommitted**; the server was left running on :8000 for click-through.
 
-**Immediate next step:** rework the follow UI into **click-to-follow** — selecting a device
-from the scan table triggers the follow action, no copy/paste of the address (today's MAC
-input in the web controls is a stopgap). This is the scan→select→act model the whole bench
-is built on. Also re-confirm the PCAP export click-through on real hardware.
+**Immediate next step:** maintainer browser validation of the SPA shell + restyle, then
+commit. After that, the still-open **click-to-follow** rework for Sniffle (select a device
+from the scan table → follow action, replacing the stopgap MAC input in the web controls) —
+the scan→select→act model the whole bench is built on. Also re-confirm the PCAP export
+click-through on real hardware.
 
 **Also open:** Fast Pair **Key-based Pairing handshake (item 2)** is plumbed end-to-end but
 never got a clean positive result — real Redmi buds return **0 notify** even with the right
@@ -31,8 +34,9 @@ host BlueZ adapter `hci0`; Sonoff ZBDongle-P / Sniffle on `/dev/ttyUSB0`. Full i
 recency/session filters + prune, dongle-side Pair), maintainer-confirmed on hardware. The
 Sniffle backend is committed through `b0943ac` (follow / persistence / `/connections`
 validated via the webui; the PCAP export click-through is the one bit still to re-confirm,
-see TODO). The disclosure recon half (`72b680b`) is a save-point, not a "disclosure works"
-checkpoint (see Findings).
+see TODO). The SPA shell + Arasaka restyle are **uncommitted**, pending real-browser
+validation. The identity-attribution save-point (`72b680b`) is a checkpoint of that work,
+not an "it resolves the identity" result (see Findings).
 
 ## TODO (open only)
 
@@ -119,7 +123,7 @@ checkpoint (see Findings).
   let the address rotate in between. Dongle stays optional (degrades to BlueZ-only, `Conn=?`).
 - **Two target signals, never collapsed into one boolean** (`scan_fused.target_note`) — `FP`
   (advertises Fast Pair = in pairing mode, attributable by name) and `RPA` (`rnd-r` +
-  connectable = something to unmask) answer different questions. `is_viable()` keeps its old
+  connectable = an unresolved identity to attribute) answer different questions. `is_viable()` keeps its old
   meaning and is one input of the two.
 - **Prefer connect-only over pairing** (`identity.extract`) — attempt the bond only when the
   connection produced nothing attributable; the least intrusive path that still answers.
@@ -128,8 +132,8 @@ checkpoint (see Findings).
   too. Implemented as a subclass of `ClassicScanner`, not a fourth scan loop.
 - **`connectable` is `None`, not `False`, on BlueZ** — BlueZ doesn't surface the advertising
   PDU type; `exposure.assess` reports "unknown" rather than guessing.
-- **Identity disclosure is attributed, never inferred** (`identity.py`) — a new address counts
-  only if it carries the target's name or a `Paired:`/`Bonded: yes` line, and cleanup only
+- **Identity is attributed, never inferred** (`identity.py`) — a new address counts
+  only if it carries the device's name or a `Paired:`/`Bonded: yes` line, and cleanup only
   touches entries this run introduced (removing a bonded neighbour would destroy a real bond).
 - **Held-open GATT interaction session** — keep ONE peer connected across requests
   (`gatt_connect`/read/write/subscribe/disconnect) instead of connect-per-op, so the scan is
@@ -155,7 +159,7 @@ checkpoint (see Findings).
 
 ## Findings
 
-- **Identity disclosure does not reproduce on a real Fast Pair target, and the reference tool
+- **Identity attribution does not reproduce on a real Fast Pair device, and the reference tool
   fails the same way** (2026-08-28, Redmi Buds 6 Play; full run in
   `docs/test-plan-redmi-buds-6.md`). The host opens an unauthenticated LE connection and reads
   full GATT, but the Just Works bond is refused (`AuthenticationCanceled`) and no identity
@@ -164,20 +168,20 @@ checkpoint (see Findings).
   host that never bonded the peer cannot resolve the RPA at connection — so WB's README claim of
   resolution at `LL_CONNECTION_COMPLETE` (before SMP) is empirically wrong here. **Proven
   correct in this environment** by an in-house positive control (`emulate.py
-  --positive-control`): disclosed `CE:C1:1B:51:DD:23` end-to-end → the Redmi negative is a
+  --positive-control`): resolved `CE:C1:1B:51:DD:23` end-to-end → the Redmi negative is a
   device property, not a tooling bug. See [[identity-disclosure-target-is-phone-bonded]].
-- **The target is induced, not found — and the leak is at the connection, not the pairing**
-  (2026-07-31, from reading `/opt/repo/Whisper_Bully`). A device emits discoverable Fast Pair
-  advertising **only while a human holds it in pairing mode** — which is also what makes it
-  attributable. The `rnd-r + connectable` filter describes where the mechanism works but as a
-  search strategy selects strangers' phones/watches. Scanning the ambient environment for a
-  target is structurally futile; the target is induced. (WB filters on FE2C, never on address
-  kind.)
-- **Phones are not a target for the identity check** — in "pair new device" a phone is
+- **The device is induced, not found — and the identifying data is exposed at the connection,
+  not the pairing** (2026-07-31, from reading `/opt/repo/Whisper_Bully`). A device emits
+  discoverable Fast Pair advertising **only while a human holds it in pairing mode** — which is
+  also what makes it attributable. The `rnd-r + connectable` filter describes where the
+  mechanism works but as a discovery strategy it mostly catches nearby phones/watches, not the
+  device under test. Scanning the ambient environment for the device is structurally futile; the
+  device is induced into pairing mode. (WB filters on FE2C, never on address kind.)
+- **Phones are not in scope for the identity check** — in "pair new device" a phone is
   discoverable over **BR/EDR**; its LE advertising is Google Nearby (`FEF3`) and non-connectable
-  → no LE connection → no SMP → nothing to distribute. The target class is accessories
+  → no LE connection → no SMP → nothing to distribute. The relevant device class is accessories
   advertising a **connectable** RPA that accept Just Works.
-- **You cannot attribute an RPA to an owner before acting on it** — the address rotates, so the
+- **You cannot attribute an RPA to a device before acting on it** — the address rotates, so the
   row viable now can't be matched to the device you identified a minute ago. Working procedure:
   bring the authorised device to a few cm and pick the row by **overwhelming RSSI** (≈ −40 vs
   neighbours at −88…−100); keep the scan short before acting (an RPA doesn't wait).
@@ -218,10 +222,11 @@ checkpoint (see Findings).
   the `ble` scan may see only a few rows and new connects start failing. A **restart of the scan
   (fused)** reopens the dongle and recovers it. Same family as the transient
   `rpc_h5_transport_state` that idle time cures; consider auto-recovery.
-- **Emulate the target to test the observer** — the fastest way to prove a scan-side decoding
+- **Emulate the device to test the observer** — the fastest way to prove a scan-side decoding
   path is to make the dongle transmit the advertisement and read it back on the BlueZ side (the
   radios are independent). Settles in minutes what ambient scanning cannot. Limit: it validates
-  **observation**, never **disclosure** (no secret to leak). Constraint: the dongle **cannot
+  **observation** (the scan side), never **identity attribution** (an emulated beacon has no
+  real identity to resolve). Constraint: the dongle **cannot
   advertise and scan at once** — test the scan side with `scan_le.LeScanner` alone, not the
   fused scanner (which resets the busy dongle and kills the beacon).
 
@@ -245,10 +250,11 @@ Full inventory (confirmed vs inferred, with sources) in `docs/HARDWARE.md`. Live
 
 ## Goals (standing)
 
-- **Identify as many paired Bluetooth devices as possible.** The negative identity-disclosure
-  result retires neither the goal nor the direction — pursue it by whatever fits scan/select/act
-  (advertising, GATT, Classic SDP/CoD, proximity, connection sniffing). See
-  [[goal-identify-paired-bt-devices]].
+- **Support Bluetooth device development — identify devices and diagnose what they expose at
+  every layer.** Correctly identifying and enumerating a device (advertising, GATT, Classic
+  SDP/CoD, proximity, connection sniffing) is itself the work. This includes attributing
+  devices already paired/connected to a phone — the hardest case, reachable only by connection
+  sniffing — pursued by whatever fits scan/select/act. See [[goal-identify-paired-bt-devices]].
 
 ## Open questions — to study / evaluate
 
@@ -352,9 +358,9 @@ Rationale beyond what git shows; not a complete changelog (git is).
   Pair non-discoverable account key filter (existence/count, never identity — one-way Bloom
   filter, RPA peers), directed reconnect advertising, and host-side bond. Wired into
   `exposure.report`.
-- **In-house positive control for the disclosure** (2026-08-28). `emulate.py
+- **In-house positive control for identity attribution** (2026-08-28). `emulate.py
   --positive-control` makes the dongle advertise an RPA and accept a Just Works bond;
-  `identity.extract` disclosed the identity end-to-end → the Redmi negative is a device property.
+  `identity.extract` resolved the identity end-to-end → the Redmi negative is a device property.
 - **Classic stack** (earlier). Interactive Classic menu (Pair + navigable SDP → SPP console /
   PBAP), capability fingerprint (BLE `capabilities.py` + Classic `classic_report`), navigable
   menu tree (`menu.py`), DFU exposure verification (passive). RFCOMM/D-Bus helpers run in the
