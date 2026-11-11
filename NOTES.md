@@ -5,6 +5,12 @@ identify devices and interact with the protocol at every layer to diagnose what 
 expose. See `CLAUDE.md` for how it's used. Git holds the detailed change history; this
 file holds rationale, plans, and open questions.
 
+**Scope / authorization:** this is a personal development bench operated on the
+maintainer's **own** hardware and **own** devices/phones (the Redmi Buds, JBL Go 3,
+etc. referenced below are the maintainer's). All active and sniffing work targets this
+owned test estate — it is authorized self-testing, not use against third-party or
+non-consenting devices.
+
 ## Current state — 2026-11-11
 
 **Last work: the web UI reworked into a true single-page app shell (SPA).** The three
@@ -163,20 +169,21 @@ not an "it resolves the identity" result (see Findings).
   fails the same way** (2026-08-28, Redmi Buds 6 Play; full run in
   `docs/test-plan-redmi-buds-6.md`). The host opens an unauthenticated LE connection and reads
   full GATT, but the Just Works bond is refused (`AuthenticationCanceled`) and no identity
-  address enters the BlueZ table — virgin *and* phone-bonded. `Whisper_Bully` fails identically.
-  Root cause: resolving an RPA needs the peer's IRK, distributed only on a **completed** bond; a
-  host that never bonded the peer cannot resolve the RPA at connection — so WB's README claim of
+  address enters the BlueZ table — virgin *and* phone-bonded. A public reference tool (root +
+  bleak) fails identically. Root cause: resolving an RPA needs the peer's IRK, distributed only
+  on a **completed** bond; a host that never bonded the peer cannot resolve the RPA at
+  connection — so that tool's README claim of
   resolution at `LL_CONNECTION_COMPLETE` (before SMP) is empirically wrong here. **Proven
   correct in this environment** by an in-house positive control (`emulate.py
   --positive-control`): resolved `CE:C1:1B:51:DD:23` end-to-end → the Redmi negative is a
   device property, not a tooling bug. See [[identity-disclosure-target-is-phone-bonded]].
 - **The device is induced, not found — and the identifying data is exposed at the connection,
-  not the pairing** (2026-07-31, from reading `/opt/repo/Whisper_Bully`). A device emits
+  not the pairing** (2026-07-31, from reading a public reference tool). A device emits
   discoverable Fast Pair advertising **only while a human holds it in pairing mode** — which is
   also what makes it attributable. The `rnd-r + connectable` filter describes where the
   mechanism works but as a discovery strategy it mostly catches nearby phones/watches, not the
   device under test. Scanning the ambient environment for the device is structurally futile; the
-  device is induced into pairing mode. (WB filters on FE2C, never on address kind.)
+  device is induced into pairing mode. (That tool filters on FE2C, never on address kind.)
 - **Phones are not in scope for the identity check** — in "pair new device" a phone is
   discoverable over **BR/EDR**; its LE advertising is Google Nearby (`FEF3`) and non-connectable
   → no LE connection → no SMP → nothing to distribute. The relevant device class is accessories
@@ -252,9 +259,10 @@ Full inventory (confirmed vs inferred, with sources) in `docs/HARDWARE.md`. Live
 
 - **Support Bluetooth device development — identify devices and diagnose what they expose at
   every layer.** Correctly identifying and enumerating a device (advertising, GATT, Classic
-  SDP/CoD, proximity, connection sniffing) is itself the work. This includes attributing
-  devices already paired/connected to a phone — the hardest case, reachable only by connection
-  sniffing — pursued by whatever fits scan/select/act. See [[goal-identify-paired-bt-devices]].
+  SDP/CoD, proximity, connection sniffing) is itself the work. This includes attributing the
+  maintainer's **own** devices already paired/connected to one of their phones — the hardest
+  case, reachable only by connection sniffing — pursued by whatever fits scan/select/act, on
+  the owned test estate (see Scope above). See [[goal-identify-paired-bt-devices]].
 
 ## Open questions — to study / evaluate
 
